@@ -264,13 +264,17 @@ extern const char view_icon[];
 
 static int desktop_entry(const char *binary) {
     if (*binary != '/' || strchr(binary, '\n') || strchr(binary, '\r')) return 2;
-    fputs("[Desktop Entry]\nType=Application\nName=View\nComment=View images and PDFs\nExec=\"", stdout);
+    fputs("[Desktop Entry]\nType=Application\nName=View\nComment=View images and PDFs\nExec=", stdout);
+    /* Keep ordinary paths usable by launchers that split Exec on spaces. */
+    bool quote = strpbrk(binary, " \t\"'\\><~|&;$*`?#()") != NULL;
+    if (quote) putchar('"');
     for (const char *s = binary; *s; ++s) {
         if (strchr("\\`$\"", *s)) fputs("\\\\", stdout);
         if (*s == '%') putchar('%');
         putchar(*s);
     }
-    fputs("\" -- %f\nIcon=view\nTerminal=false\nCategories=Graphics;Viewer;\nStartupWMClass=View\nMimeType=", stdout);
+    if (quote) putchar('"');
+    fputs(" -- %f\nIcon=view\nTerminal=false\nCategories=Graphics;Viewer;\nStartupWMClass=View\nMimeType=", stdout);
     for (int i = 0; mime_types[i]; ++i) printf("%s;", mime_types[i]);
     putchar('\n');
     return 0;

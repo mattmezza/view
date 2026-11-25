@@ -64,7 +64,8 @@ def main():
         config = root / "view"
         config.mkdir()
         (config / "config").write_text("check_updates = false\nwidth = 880\nheight = 700\n")
-        env = dict(os.environ, XDG_RUNTIME_DIR=temporary, XDG_CONFIG_HOME=temporary)
+        env = dict(os.environ, XDG_RUNTIME_DIR=temporary, XDG_CONFIG_HOME=temporary,
+                   XDG_CURRENT_DESKTOP="", DE="generic", XDG_DATA_HOME=str(root / "share"))
         gallery = root / "Gallery with spaces"
         gallery.mkdir()
         one = gallery / "scene2.png"
@@ -111,7 +112,13 @@ def main():
             assert status()["fullscreen"]
             cli("fullscreen", "off")
             assert not status()["fullscreen"]
-            cli("open", pdf)
+            applications = Path(env["XDG_DATA_HOME"]) / "applications"
+            applications.mkdir(parents=True)
+            (applications / "view.desktop").write_text(cli("--desktop-entry", binary).stdout)
+            subprocess.run(["xdg-mime", "default", "view.desktop", "application/pdf"],
+                           env=env, check=True, timeout=8)
+            subprocess.run(["xdg-open", str(pdf)], env=env, check=True, timeout=8,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             assert (status()["kind"], status()["count"]) == ("pdf", 3)
             cli("goto", "3")
             assert status()["index"] == 3

@@ -18,7 +18,7 @@ Pass `--default` to register View as the default handler for PDFs and supported 
 curl -fsSL https://raw.githubusercontent.com/mattmezza/view/main/install.sh | sh -s -- --default
 ```
 
-Run the installer again to upgrade. It verifies the release checksum and installs into `~/.local/bin` and `${XDG_DATA_HOME:-~/.local/share}`. Set `VIEW_BIN_DIR` to change the binary location or `VIEW_VERSION=v0.1.0` to pin a release. Restart View after upgrading a running instance. Release binaries for x86-64 and ARM64 are statically linked. View’s update badge uses `curl` to check GitHub in the background.
+Run the installer again to upgrade. It verifies the release checksum and installs into `~/.local/bin` and `${XDG_DATA_HOME:-~/.local/share}`. Set `VIEW_BIN_DIR` to change the binary location or `VIEW_VERSION=v0.1.1` to pin a release. Restart View after upgrading a running instance. Release binaries for x86-64 and ARM64 are statically linked. View’s update badge uses `curl` to check GitHub in the background.
 
 ## Use
 
