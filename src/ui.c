@@ -12,7 +12,8 @@
 extern const char icon_folder_open[], icon_photo[], icon_document_text[], icon_squares_2x2[],
     icon_document[], icon_chevron_left[], icon_chevron_right[], icon_magnifying_glass[],
     icon_magnifying_glass_plus[], icon_magnifying_glass_minus[], icon_arrows_pointing_out[],
-    icon_x_mark[], icon_arrow_up[], icon_arrow_down[], icon_arrow_down_tray[];
+    icon_x_mark[], icon_arrow_up[], icon_arrow_down[], icon_arrow_down_tray[], icon_information_circle[],
+    icon_printer[], icon_presentation_chart_bar[];
 
 void app_icons(App *a) {
     const char *const sources[] = {
@@ -20,6 +21,7 @@ void app_icons(App *a) {
         icon_chevron_left, icon_chevron_right, icon_magnifying_glass, icon_magnifying_glass_plus,
         icon_magnifying_glass_minus, icon_arrows_pointing_out,
         icon_x_mark, icon_arrow_up, icon_arrow_down, icon_arrow_down_tray,
+        icon_information_circle, icon_printer, icon_presentation_chart_bar,
     };
     NSVGrasterizer *rast = nsvgCreateRasterizer();
     for (int i = 0; rast && i < ICONS; ++i) {
@@ -46,6 +48,7 @@ static double page_top(const App *a, int page) {
 }
 
 int app_page_at(const App *a, double y) {
+    if (a->presenting) return a->doc.current;
     double target = y + a->scroll - a->layout.canvas.y;
     int lo = 0, hi = a->doc.count;
     while (lo + 1 < hi) {
@@ -60,6 +63,9 @@ cui_rect app_page_rect(const App *a, int index) {
     cui_rect c = a->layout.canvas;
     PageSize page = a->doc.pages[index];
     double scale = a->layout.scale, width = page.w * scale;
+    if (a->presenting)
+        return (cui_rect){c.x + (c.w - width) / 2, c.y + (c.h - page.h * scale) / 2,
+                          width, page.h * scale};
     return (cui_rect){
         c.x + (c.w - width) / 2 + a->pan,
         c.y + page_top(a, index) - a->scroll,
@@ -69,6 +75,11 @@ cui_rect app_page_rect(const App *a, int index) {
 
 void app_jump(App *a, int index) {
     if (index < 0 || index >= a->doc.count) return;
+    if (a->presenting) {
+        a->doc.current = index;
+        a->dirty = true;
+        return;
+    }
     a->scroll = fmax(0, page_top(a, index) - 10);
     a->sidebar_shift = 0;
     app_layout(a);
@@ -77,22 +88,34 @@ void app_jump(App *a, int index) {
 
 void app_layout(App *a) {
     Document *d = &a->doc;
-    bool chrome = !a->fullscreen;
+    bool chrome = !a->fullscreen && !a->presenting;
     bool gallery = chrome && a->gallery && d->picture.pixels && d->count > 1 && a->h >= 330;
     bool sidebar = chrome && a->sidebar && d->pdf && a->w >= 580;
     int top = chrome ? 62 : 0, foot = chrome ? 40 : 0;
-    int side = sidebar ? a->config.sidebar_width : 0;
-    int strip = gallery ? a->config.thumb_size + 37 : 0;
-    a->layout.canvas = (cui_rect){side, top, fmax(1, a->w - side), fmax(1, a->h - top - foot - strip)};
-    a->layout.strip = (cui_rect){0, a->h - foot - strip, a->w, strip};
+    int info = chrome && a->info && d->path ? fmin(a->config.info_width, a->w * .48) : 0;
+    int side = sidebar ? fmin(a->sidebar_width, fmin(a->w * .44, a->w - info - 200)) : 0;
+    int width = a->w - info;
+    int thumb = fmin(a->thumb_size, fmax(40, fmin(a->h - top - foot - 157, (width - 105) * .75)));
+    int strip = gallery ? thumb + 42 : 0;
+    a->layout.canvas = (cui_rect){side, top, fmax(1, width - side), fmax(1, a->h - top - foot - strip)};
+    a->layout.strip = (cui_rect){0, a->h - foot - strip, width, strip};
     a->layout.sidebar = (cui_rect){0, top, side, a->h - top - foot};
+    a->layout.info = (cui_rect){width, top, info, a->h - top - foot};
+    a->layout.strip_grip = (cui_rect){0, a->layout.strip.y - 3, width, strip ? 11 : 0};
+    a->layout.sidebar_grip = (cui_rect){side - 5, top, side ? 10 : 0, a->h - top - foot};
     cui_rect c = a->layout.canvas;
 
-    a->layout.thumb_width = a->config.thumb_size * 4 / 3;
-    int slots = fmin(23, fmax(1, (a->w - 112) / (a->layout.thumb_width + 10)));
+    a->layout.thumb_width = thumb * 4 / 3;
+    int slots = fmin(23, fmax(1, (width - 105) / (a->layout.thumb_width + 10)));
     a->layout.strip_slots = slots;
     double pad = a->fullscreen ? 4 : a->config.padding;
     double cap_w = fmax(32, c.w - 2 * pad), cap_h = fmax(32, c.h - 2 * pad);
+    if (a->presenting) {
+        double w = d->pdf ? d->pages[d->current].w : d->picture.w;
+        double h = d->pdf ? d->pages[d->current].h : d->picture.h;
+        a->layout.scale = w > 0 && h > 0 ? fmin(c.w / w, c.h / h) : 1;
+        return;
+    }
     double w = d->pdf ? d->max_width : d->picture.w;
     double h = d->pdf ? d->pages[0].h : d->picture.h;
     double fit = w > 0 && h > 0 ? fmin(cap_w / w, cap_h / h) : 1;
@@ -225,9 +248,9 @@ static void topbar(App *a) {
 
     int x = a->w - 15;
     action_button(a, x -= 34, 14, "Fullscreen", ICON_FULL, FULLSCREEN, false, false);
-    action_button(a, x -= 38, 14, "Zoom in", ICON_IN, ZOOM_IN, false, !d->path);
-    action_button(a, x -= 36, 14, "Zoom out", ICON_OUT, ZOOM_OUT, false, !d->path);
     if (a->w >= 480) {
+        action_button(a, x -= 38, 14, "Zoom in", ICON_IN, ZOOM_IN, false, !d->path);
+        action_button(a, x -= 36, 14, "Zoom out", ICON_OUT, ZOOM_OUT, false, !d->path);
         x -= 9;
         fill(a, (cui_rect){x + 2, 20, 1, 22}, palette(a, BORDER), 0);
         if (d->pdf) {
@@ -237,6 +260,11 @@ static void topbar(App *a) {
             action_button(a, x -= 38, 14, "Gallery", ICON_GALLERY, GALLERY, a->gallery && d->count > 1,
                           d->count < 2);
         }
+    }
+    if (d->path) {
+        action_button(a, x -= 36, 14, "File info", ICON_INFO, INFO, a->info, false);
+        action_button(a, x -= 36, 14, "Print", ICON_PRINT, PRINT, false, false);
+        action_button(a, x -= 36, 14, "Present", ICON_PRESENT, PRESENT, false, false);
     }
     action_button(a, x -= 38, 14, "Open file or folder", ICON_OPEN, OPEN, false, false);
     if (*a->update && a->w >= 660) {
@@ -333,7 +361,9 @@ static void filmstrip(App *a) {
     int count = fmin(a->layout.strip_slots, d->count), width = a->layout.thumb_width;
     int start = limit(d->current - count / 2 + a->thumbnail_shift, 0, d->count - count);
     float left = (strip.w - (count * width + (count - 1) * 10)) / 2;
-    float y = 12, height = a->config.thumb_size;
+    float y = 17, height = strip.h - 42;
+    bool grip = a->drag == DRAG_STRIP || a->pointer == POINTER_ROW;
+    fill(a, (cui_rect){(strip.w - 42) / 2, 5, 42, 3}, palette(a, grip ? ACCENT : MUTED), 2);
     for (int i = 0; i < count; ++i) {
         int index = start + i;
         char key[48], number[24];
@@ -358,7 +388,7 @@ static void filmstrip(App *a) {
     }
     action_button(a, 15, (int)(y + (height - 34) / 2), "Previous image", ICON_LEFT, PREV,
                   false, !a->config.wrap && d->current == 0);
-    action_button(a, a->w - 49, (int)(y + (height - 34) / 2), "Next image", ICON_RIGHT, NEXT,
+    action_button(a, strip.w - 49, (int)(y + (height - 34) / 2), "Next image", ICON_RIGHT, NEXT,
                   false, !a->config.wrap && d->current == d->count - 1);
     cui_end_box(a->ui);
 }
@@ -377,7 +407,7 @@ static void page_sidebar(App *a) {
     label(a, (cui_rect){side.w - 73, 8, 54, 27}, total, a->config.font_size - 2, MUTED,
           false, true, CUI_ALIGN_END);
     fill(a, (cui_rect){15, 40, side.w - 30, 1}, palette(a, BORDER), 0);
-    int tile_h = a->config.thumb_size + 81;
+    int tile_h = side.w - 9;
     int slots = fmax(1, (side.h - 50) / tile_h);
     int start = limit(d->current - slots / 2 + a->sidebar_shift, 0, fmax(0, d->count - slots));
     for (int i = 0; i <= slots && start + i < d->count; ++i) {
@@ -394,7 +424,7 @@ static void page_sidebar(App *a) {
             selected ? palette(a, ACCENT) : (cui_color){0}, selected ? 1 : 0, 7, true);
         cui_interaction hit = cui_interact(a->ui, id, CUI_ROLE_BUTTON, cui_string(key),
                                            a->prompt != PROMPT_NONE, selected, 0);
-        Image *im = thumbnail(a, index, 220);
+        Image *im = thumbnail(a, index, ((int)side.w + 31) / 32 * 64);
         if (im) {
             float scale = fminf((side.w - 49) / im->w, (tile_h - 38.f) / im->h);
             float w = im->w * scale, h = im->h * scale;
@@ -408,6 +438,82 @@ static void page_sidebar(App *a) {
         if (hit.activated && a->prompt == PROMPT_NONE) a->frame_item = index;
         cui_end_box(a->ui);
     }
+    bool grip = a->drag == DRAG_SIDEBAR || a->pointer == POINTER_COLUMN;
+    fill(a, (cui_rect){side.w - 5, (side.h - 42) / 2, 3, 42},
+         palette(a, grip ? ACCENT : MUTED), 2);
+    cui_end_box(a->ui);
+}
+
+static void info_sidebar(App *a) {
+    cui_rect side = a->layout.info;
+    if (side.w <= 0) return;
+    Metadata *m = &a->metadata;
+    metadata_load(m, &a->doc);
+    cui_begin_portal(a->ui, cui_id_from(a->ui, "file info"),
+        (cui_box){.background = palette(a, SURFACE), .clip = true}, side, 2);
+    fill(a, (cui_rect){0, 0, 1, side.h}, palette(a, BORDER), 0);
+    label(a, (cui_rect){16, 8, side.w - 64, 27}, "File info", a->config.font_size, FOREGROUND,
+          true, false, CUI_ALIGN_START);
+    if (button(a, (cui_rect){side.w - 40, 8, 27, 27}, "Close file info", ICON_CLOSE, NULL, false, false))
+        a->frame_action = INFO;
+    fill(a, (cui_rect){15, 40, side.w - 30, 1}, palette(a, BORDER), 0);
+
+    float view_h = side.h - 49, width = side.w - 37;
+    int size = a->config.font_size - 2, line_h = size + 5;
+    float advance = renderer_measure(&a->renderer, cui_string("M"), size,
+                                     (cui_text_style){.monospace = true}).width;
+    int columns = fmax(10, floor(width / fmax(1, advance)));
+    cui_begin_absolute_box(a->ui, 0, (cui_box){.clip = true}, (cui_rect){14, 43, side.w - 28, view_h});
+    int y = 4 - a->info_scroll;
+    for (int i = 0; i < m->count; ++i) {
+        int top = y;
+        const MetadataRow *row = &m->rows[i];
+        const char *p = row->value, *end = p + strlen(p);
+        y += line_h + 2;
+        if (top + line_h > 0 && top < view_h)
+            label(a, (cui_rect){2, top, width, line_h}, row->label, size, MUTED, true, false, CUI_ALIGN_START);
+        while (p < end) {
+            const char *stop = p, *space = NULL;
+            for (int j = 0; j < columns && stop < end; ++j) {
+                if (*stop == ' ') space = stop;
+                utf8_next(&stop, end);
+            }
+            if (stop < end && space && space > p && stop - space < columns / 2) stop = space;
+            if (y + line_h > 0 && y < view_h) {
+                char line[4097];
+                memcpy(line, p, stop - p);
+                line[stop - p] = 0;
+                label(a, (cui_rect){2, y, width, line_h}, line, size, FOREGROUND, false, true, CUI_ALIGN_START);
+            }
+            p = stop;
+            while (p < end && *p == ' ') ++p;
+            y += line_h;
+        }
+        y += 11;
+        if (y > 0 && top < view_h) {
+            char key[36];
+            snprintf(key, sizeof key, "Metadata row %d", i);
+            cui_id id = cui_id_from(a->ui, key);
+            cui_begin_absolute_box(a->ui, id, (cui_box){0}, (cui_rect){0, top, width, y - top - 5});
+            cui_interaction hit = cui_interact(a->ui, id, CUI_ROLE_BUTTON, cui_string(row->label),
+                                               a->prompt != PROMPT_NONE, false, 0);
+            if (hit.activated && a->prompt == PROMPT_NONE) a->frame_meta = i;
+            if (hit.hovered && a->prompt == PROMPT_NONE) tooltip_target(a, id, row->label);
+            cui_end_box(a->ui);
+        }
+    }
+    cui_end_box(a->ui);
+    int content_h = y + a->info_scroll;
+    a->info_end = fmax(0, content_h - view_h);
+    if (a->info_scroll > a->info_end) { a->info_scroll = a->info_end; a->dirty = true; }
+    if (a->info_end > 0 && view_h > 0) {
+        float h = fmax(15, view_h * view_h / content_h);
+        float top = (view_h - h) * a->info_scroll / a->info_end;
+        fill(a, (cui_rect){side.w - 9, 43 + top, 3, h}, palette(a, MUTED), 2);
+    }
+    if (m->extra.fd >= 0 && y < view_h)
+        label(a, (cui_rect){16, 45 + y, side.w - 32, line_h}, "Reading metadata…", size,
+              MUTED, false, false, CUI_ALIGN_START);
     cui_end_box(a->ui);
 }
 
@@ -457,22 +563,24 @@ static void canvas(App *a) {
     Document *d = &a->doc;
     cui_rect c = a->layout.canvas;
     cui_begin_portal(a->ui, cui_id_from(a->ui, "canvas"),
-        (cui_box){.background = palette(a, CANVAS), .clip = true}, c, 1);
+        (cui_box){.background = a->presenting ? (cui_color){0, 0, 0, 255} : palette(a, CANVAS),
+                  .clip = true}, c, 1);
     if (d->pdf) {
         int start = app_page_at(a, c.y);
-        for (int i = start; i < d->count && i - start < 32; ++i) {
+        for (int i = start; i < d->count && i - start < (a->presenting ? 1 : 32); ++i) {
             cui_rect p = app_page_rect(a, i);
             p.x -= c.x; p.y -= c.y;
             if (p.y >= c.h) break;
             if (p.y + p.h <= 0) continue;
-            fill(a, (cui_rect){p.x - 1, p.y - 1, p.w + 2, p.h + 2}, palette(a, BORDER), 0);
+            if (!a->presenting)
+                fill(a, (cui_rect){p.x - 1, p.y - 1, p.w + 2, p.h + 2}, palette(a, BORDER), 0);
             fill(a, p, (cui_color){255, 255, 255, 255}, 0);
             int width = fmin(4096, fmax(24, roundf(p.w)));
             Image *im = document_cached(d, i, false, width, true, &a->thumb_pending);
             if (im) image(a, *im, p, (cui_rect){0}, false, (cui_color){.a = 255});
             else label(a, (cui_rect){p.x, p.y, p.w, p.h}, "Page unavailable", a->config.font_size,
                        BORDER, false, false, CUI_ALIGN_CENTER);
-            pdf_highlights(a, i, p);
+            if (!a->presenting) pdf_highlights(a, i, p);
         }
     } else if (d->picture.pixels) {
         Image im = d->picture;
@@ -501,7 +609,7 @@ static void canvas(App *a) {
 }
 
 static void findbar(App *a) {
-    if (!a->doc.pdf || !*a->doc.query || a->fullscreen || a->prompt != PROMPT_NONE) return;
+    if (!a->doc.pdf || !*a->doc.query || a->fullscreen || a->presenting || a->prompt != PROMPT_NONE) return;
     cui_rect c = a->layout.canvas;
     int w = fmin(c.w - 24, 428);
     if (w < 210) return;
@@ -549,7 +657,7 @@ static void input_content(App *a, const char *text, size_t index, cui_rect r) {
 }
 
 static void prompt_button(App *a, cui_rect r, const char *name, int command, bool primary) {
-    cui_id id = cui_id_from(a->ui, name);
+    cui_id id = cui_id_from(a->ui, primary ? "dialog confirm" : "dialog dismiss");
     bool hot = cui_interaction_state(a->ui, id).hovered;
     box(a, id, r, palette(a, primary || hot ? RAISED : SURFACE), palette(a, primary ? ACCENT : BORDER),
         1, 7, true);
@@ -574,17 +682,132 @@ static void key_summary(const App *a, Action action, char out[96]) {
     }
 }
 
+static bool print_control(App *a, cui_rect r, const char *key, const char *value, int pictogram,
+                          bool selected, bool disabled) {
+    cui_id id = cui_id_from(a->ui, key);
+    cui_interaction before = cui_interaction_state(a->ui, id);
+    box(a, id, r, palette(a, selected || before.hovered ? RAISED : SURFACE),
+        palette(a, selected || before.focus_visible ? ACCENT : BORDER), 1, 5, true);
+    cui_interaction hit = cui_interact(a->ui, id, CUI_ROLE_BUTTON, cui_string(key), disabled, selected, 0);
+    if (pictogram >= 0)
+        icon(a, pictogram, (cui_rect){(r.w - 15) / 2, (r.h - 15) / 2, 15, 15}, disabled ? MUTED : ACCENT);
+    else
+        label(a, (cui_rect){6, 0, r.w - 12, r.h}, value, a->config.font_size - 2,
+              disabled ? MUTED : FOREGROUND, false, false, CUI_ALIGN_CENTER);
+    cui_end_box(a->ui);
+    return hit.activated && !disabled;
+}
+
+static void sheet_preview(App *a, cui_rect r, Image converted[9]) {
+    const PrintSettings *p = &a->print.settings;
+    PrintSheet sheet = print_sheet(p);
+    int first, last, cells = sheet.rows * sheet.cols;
+    bool valid = print_range(a, &first, &last);
+    int sheets = valid ? (last - first + cells) / cells : 0;
+    box(a, 0, r, palette(a, CANVAS), palette(a, BORDER), 1, 8, true);
+    float s = fmin((r.w - 40) / sheet.w, (r.h - 52) / sheet.h);
+    float dx = (r.w - sheet.w * s) / 2, dy = (r.h - 29 - sheet.h * s) / 2;
+    fill(a, (cui_rect){dx + 3, dy + 4, sheet.w * s, sheet.h * s}, palette(a, BORDER), 1);
+    fill(a, (cui_rect){dx, dy, sheet.w * s, sheet.h * s}, (cui_color){255, 255, 255, 255}, 1);
+    for (int i = 0; valid && i < cells && first + i <= last; ++i) {
+        int index = first + i;
+        cui_rect cell = print_cell(p, sheet, i);
+        Image *im = thumbnail(a, index, 256);
+        double w = a->doc.pdf ? a->doc.pages[index].w : im ? im->w : a->doc.picture.w;
+        double h = a->doc.pdf ? a->doc.pages[index].h : im ? im->h : a->doc.picture.h;
+        cui_rect fit = print_fit(cell, p->option[PRINT_SCALE], w, h);
+        cui_rect bounds = {dx + fit.x * s, dy + fit.y * s, fit.w * s, fit.h * s};
+        if (im && p->option[PRINT_COLOR]) {
+            converted[i] = image_resize(*im, im->w, im->h);
+            if (converted[i].pixels) {
+                im = &converted[i];
+                for (size_t px = 0; px < (size_t)im->w * im->h * 4; px += 4) {
+                    unsigned char *pix = im->pixels + px;
+                    pix[0] = pix[1] = pix[2] = (77 * pix[0] + 150 * pix[1] + 29 * pix[2] + 128) >> 8;
+                }
+            }
+        }
+        if (im) image(a, *im, bounds, (cui_rect){0}, false, (cui_color){.a = 255});
+        else fill(a, bounds, (cui_color){225, 225, 225, 255}, 0);
+    }
+    char count[72];
+    if (sheets > 1) snprintf(count, sizeof count, "Sheet 1 of %d", sheets);
+    else snprintf(count, sizeof count, "%s", sheets ? "1 sheet" : "Enter a valid range");
+    label(a, (cui_rect){8, r.h - 29, r.w - 16, 24}, count, a->config.font_size - 2,
+          MUTED, false, true, CUI_ALIGN_CENTER);
+    cui_end_box(a->ui);
+}
+
+static void print_dialog(App *a, int w, int h, Image converted[9]) {
+    static const char *const fields[] = {"Printer", "Items", "Paper", "Orientation", "Layout",
+        "Order", "Scale", "Color", "Sides", "Copies"};
+    bool wide = w >= 615, busy = a->print.job.fd >= 0;
+    int width = wide ? fmax(290, w * .46) : w - 40;
+    int row = 33, view_h = h - 123, value_x = fmin(109, width * .36);
+    bool range = a->print.settings.option[PRINT_ITEMS] == 2;
+    a->print.scroll_end = fmax(0, (PRINT_FIELDS + range) * row + 2 - view_h);
+    a->print.scroll = fmin(a->print.scroll, a->print.scroll_end);
+    label(a, (cui_rect){20, 12, w - 40, 32}, "Print", a->config.font_size + 7,
+          FOREGROUND, true, false, CUI_ALIGN_START);
+    label(a, (cui_rect){20, 44, w - 40, 19}, *a->prompt_error ? a->prompt_error : base_name(a->doc.path),
+          a->config.font_size - 2, *a->prompt_error ? ACCENT : MUTED, false, false, CUI_ALIGN_START);
+    cui_begin_absolute_box(a->ui, 0, (cui_box){.clip = true}, (cui_rect){20, 69, width, view_h});
+    int y = 1 - a->print.scroll;
+    for (int i = 0; i < PRINT_FIELDS; ++i, y += row) {
+        if (y + row > 0 && y < view_h) {
+            char prev[42], next[42], buf[32];
+            snprintf(prev, sizeof prev, "Previous %s", fields[i]);
+            snprintf(next, sizeof next, "Next %s", fields[i]);
+            label(a, (cui_rect){0, y, value_x - 7, 29}, fields[i], a->config.font_size,
+                  FOREGROUND, false, false, CUI_ALIGN_START);
+            bool disabled = busy || (i == PRINT_PRINTER && !a->print.num_queues) ||
+                            (i == PRINT_ITEMS && a->doc.count < 2) ||
+                            (i == PRINT_ORDER && !a->print.settings.option[PRINT_GRID]);
+            int left = value_x, right = width - 34;
+            const char *value = print_value(a, i, buf);
+            if (print_control(a, (cui_rect){left, y, 27, 29}, prev, NULL, ICON_LEFT, false, disabled))
+                a->frame_command = UI_PRINT_STEP + 2 * i;
+            if (print_control(a, (cui_rect){right, y, 27, 29}, next, NULL, ICON_RIGHT, false, disabled))
+                a->frame_command = UI_PRINT_STEP + 2 * i + 1;
+            if (print_control(a, (cui_rect){left + 31, y, right - left - 35, 29}, fields[i],
+                              value, -1, i == PRINT_COLOR && a->print.settings.option[i], disabled))
+                a->frame_command = UI_PRINT_STEP + 2 * i + 1;
+        }
+        if (i == PRINT_ITEMS && range) {
+            y += row;
+            if (y + row <= 0 || y >= view_h) continue;
+            label(a, (cui_rect){0, y, value_x - 7, 29}, "Range", a->config.font_size,
+                  FOREGROUND, false, false, CUI_ALIGN_START);
+            cui_rect field = {value_x, y, width - value_x - 7, 29};
+            if (a->print.editable && !busy) input_content(a, a->input, a->caret, field);
+            else if (print_control(a, field, "Edit range", a->input, -1, false, busy))
+                a->frame_command = UI_PRINT_RANGE;
+        }
+    }
+    cui_end_box(a->ui);
+    if (wide) sheet_preview(a, (cui_rect){width + 36, 69, w - width - 56, view_h}, converted);
+    if (a->print.scroll_end > 0) {
+        float bar = fmax(15, view_h * (float)view_h / (view_h + a->print.scroll_end));
+        float y = 69 + (view_h - bar) * a->print.scroll / a->print.scroll_end;
+        fill(a, (cui_rect){width + 21, y, 3, bar}, palette(a, MUTED), 2);
+    }
+    prompt_button(a, (cui_rect){w - 254, h - 43, 100, 30}, busy ? "Close" : "Cancel", UI_DISMISS, false);
+    if (busy) label(a, (cui_rect){w - 150, h - 43, 130, 30}, "Preparing…", a->config.font_size - 1,
+                    MUTED, false, false, CUI_ALIGN_CENTER);
+    else prompt_button(a, (cui_rect){w - 145, h - 43, 125, 30}, "Print", UI_SUBMIT, true);
+}
+
 static void help(App *a, int w, int h) {
     static const struct { const char *name; Action action; } rows[] = {
         {"Open", OPEN}, {"Fullscreen", FULLSCREEN}, {"Next", NEXT}, {"Previous", PREV},
         {"Gallery", GALLERY}, {"Page thumbnails", SIDEBAR}, {"Zoom in", ZOOM_IN},
         {"Zoom out", ZOOM_OUT}, {"Fit", FIT}, {"Actual size", ACTUAL},
         {"Find in PDF", FIND}, {"Next match", FIND_NEXT}, {"Copy PDF text", COPY},
-        {"Reload settings", RELOAD}, {"Quit", QUIT}
+        {"File info", INFO}, {"Print", PRINT}, {"Present", PRESENT}, {"Reload settings", RELOAD}, {"Quit", QUIT}
     };
     label(a, (cui_rect){22, 13, w - 44, 32}, "Keyboard shortcuts", a->config.font_size + 6,
           FOREGROUND, true, false, CUI_ALIGN_START);
-    int row = fmin(25, fmax(14, (h - 100) / 8));
+    int row = fmin(24, fmax(14, (h - 100) / 9));
     for (size_t i = 0; i < sizeof rows / sizeof *rows; ++i) {
         int col = i % 2, x = 22 + col * ((w - 36) / 2), y = 51 + (i / 2) * row;
         char key[96];
@@ -598,18 +821,20 @@ static void help(App *a, int w, int h) {
     prompt_button(a, (cui_rect){w - 112, h - 46, 90, 30}, "Close", UI_DISMISS, false);
 }
 
-static void prompt(App *a) {
+static void prompt(App *a, Image converted[9]) {
     if (a->prompt == PROMPT_NONE) return;
     cui_begin_portal(a->ui, cui_id_from(a->ui, "dialog overlay"), (cui_box){
         .background = {0, 0, 0, 129}, .clip = true
     }, (cui_rect){0, 0, a->w, a->h}, 10);
     cui_interact(a->ui, cui_id_from(a->ui, "dialog overlay"), CUI_ROLE_NONE, cui_string(""), false, false, 0);
-    int w = fmin(a->w - 30, a->prompt == PROMPT_HELP ? 640 : 548);
-    int h = fmin(a->h - 24, a->prompt == PROMPT_HELP ? 304 : 184);
+    int w = fmin(a->w - 30, a->prompt == PROMPT_PRINT ? 780 : a->prompt == PROMPT_HELP ? 640 : 548);
+    int h = fmin(a->h - 24, a->prompt == PROMPT_PRINT ? 504 : a->prompt == PROMPT_HELP ? 332 : 184);
     box(a, cui_id_from(a->ui, "dialog"), (cui_rect){(a->w - w) / 2, (a->h - h) / 2, w, h},
         palette(a, SURFACE), palette(a, BORDER), 1, 12, true);
     if (a->prompt == PROMPT_HELP) {
         help(a, w, h);
+    } else if (a->prompt == PROMPT_PRINT) {
+        print_dialog(a, w, h, converted);
     } else {
         const char *title = a->prompt == PROMPT_OPEN ? "Open file or folder" :
                             a->prompt == PROMPT_FIND ? "Find in PDF" : "Unlock PDF";
@@ -658,10 +883,12 @@ static void floating_status(App *a) {
 }
 
 void app_draw(App *a) {
+    Image converted[9] = {0};
     app_layout(a);
     a->dirty = false;
     a->frame_action = ACTIONS;
     a->frame_item = -1;
+    a->frame_meta = -1;
     a->frame_command = UI_NONE;
     a->thumb_pending = false;
     double time = now();
@@ -671,14 +898,15 @@ void app_draw(App *a) {
     a->hover_label[0] = 0;
     cui_begin_box(a->ui, cui_id_from(a->ui, "view"), (cui_box){.width = -1, .height = -1});
     canvas(a);
-    if (!a->fullscreen) {
+    if (!a->fullscreen && !a->presenting) {
         page_sidebar(a);
         filmstrip(a);
+        info_sidebar(a);
         topbar(a);
         footer(a);
     }
     findbar(a);
-    if (a->prompt != PROMPT_NONE) prompt(a);
+    if (a->prompt != PROMPT_NONE) prompt(a, converted);
     floating_status(a);
     cui_end_box(a->ui);
     cui_draw_list list = cui_end_frame(a->ui);
@@ -689,9 +917,14 @@ void app_draw(App *a) {
         cui_clear_error(a->ui);
     }
     renderer_paint(&a->renderer, list, palette(a, BACKGROUND));
+    for (size_t i = 0; i < sizeof converted / sizeof *converted; ++i) image_free(&converted[i]);
     if (!a->thumb_budget && time >= a->next_thumbnail) a->next_thumbnail = now() + .012;
     if (!*a->hover_label) a->hovered_id = 0;
     if (a->frame_action != ACTIONS) app_action(a, a->frame_action);
     if (a->frame_item >= 0) app_item(a, a->frame_item);
+    if (a->frame_meta >= 0 && a->frame_meta < a->metadata.count) {
+        app_set_clipboard(a, strdup(a->metadata.rows[a->frame_meta].value));
+        app_toast(a, "Copied to clipboard");
+    }
     if (a->frame_command != UI_NONE) app_command(a, a->frame_command);
 }

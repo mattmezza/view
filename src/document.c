@@ -14,6 +14,11 @@
 
 static size_t image_bytes(Image i) { return (size_t)i.w * i.h * 4; }
 
+void document_init(void) {
+    static bool initialized;
+    if (!initialized) { FPDF_InitLibrary(); initialized = true; }
+}
+
 void document_close(Document *d) {
     if (d->pdf) FPDF_CloseDocument(d->pdf);
     image_free(&d->picture);
@@ -119,8 +124,7 @@ OpenResult document_open(Document *d, const char *path, const char *password, ch
     }
 
     if (S_ISREG(st.st_mode) && pdf_file(full)) {
-        static bool initialized;
-        if (!initialized) { FPDF_InitLibrary(); initialized = true; }
+        document_init();
         next.pdf = FPDF_LoadDocument(full, password);
         if (!next.pdf) {
             unsigned long cause = FPDF_GetLastError();
@@ -178,7 +182,7 @@ done:
     return result;
 }
 
-static Image render_page(Document *d, int index, int wanted) {
+Image document_render_page(const Document *d, int index, int wanted, int flags) {
     PageSize p = d->pages[index];
     double scale = fmin(wanted / p.w, 4096.0 / fmax(p.w, p.h));
     int w = fmax(1, round(p.w * scale)), h = fmax(1, round(p.h * scale));
@@ -189,7 +193,7 @@ static Image render_page(Document *d, int index, int wanted) {
     FPDF_BITMAP bitmap = pixels ? FPDFBitmap_CreateEx(w, h, FPDFBitmap_BGRx, pixels, w * 4) : NULL;
     if (bitmap) {
         FPDFBitmap_FillRect(bitmap, 0, 0, w, h, 0xffffffff);
-        FPDF_RenderPageBitmap(bitmap, page, 0, 0, w, h, 0, FPDF_ANNOT | FPDF_LCD_TEXT);
+        FPDF_RenderPageBitmap(bitmap, page, 0, 0, w, h, 0, flags);
         FPDFBitmap_Destroy(bitmap);
         for (size_t i = 0; i < (size_t)w * h * 4; i += 4) {
             unsigned char blue = pixels[i];
@@ -234,7 +238,8 @@ Image *document_cached(Document *d, int index, bool thumb, int width, bool load,
     CacheEntry *e = oldest(d);
     if (!e) return NULL;
     evict(d, e);
-    Image im = d->pdf ? render_page(d, index, width) : image_load(d->files[index], width);
+    Image im = d->pdf ? document_render_page(d, index, width, FPDF_ANNOT | FPDF_LCD_TEXT) :
+                         image_load(d->files[index], width);
     while (d->cache_bytes + image_bytes(im) > CACHE_BYTES) {
         CacheEntry *victim = NULL;
         for (size_t i = 0; i < sizeof d->cache / sizeof *d->cache; ++i) {

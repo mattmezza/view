@@ -11,8 +11,9 @@ BUILD ?= $(if $(filter 1,$(STATIC)),build/static,build)
 LLD_DIR ?=
 PDFIUM ?= $(BUILD)/pdfium
 PKG_CONFIG ?= pkg-config
+OBJCOPY ?= objcopy
 
-PACKAGES := x11 libwebpdemux libwebp
+PACKAGES := x11 libwebpdemux libwebp libexif zlib
 ifeq ($(STATIC),1)
 CODEC_DEPS := $(BUILD)/static-deps/.ready
 CODEC_CFLAGS := -I$(abspath $(BUILD)/static-deps/include)
@@ -20,7 +21,7 @@ CODEC_LIBS := $(BUILD)/static-deps/lib/libtiff.a $(BUILD)/static-deps/lib/libavi
 PKG_FLAGS := --static
 LDFLAGS += -static
 else
-PACKAGES += libtiff-4 libavif
+PACKAGES += libtiff-4 libavif libjpeg
 endif
 
 CPPFLAGS += -D_GNU_SOURCE -DFPDF_STATIC -Ivendor/cui -Ivendor/stb -Ivendor/nanosvg -I$(PDFIUM)/include
@@ -48,6 +49,9 @@ $(TARGET): $(OBJECTS) $(BUILD)/assets.o $(PDFIUM)/.ready $(CODEC_DEPS) Makefile
 
 $(BUILD)/%.o: src/%.c $(PDFIUM)/.ready $(CODEC_DEPS) $(BUILD)/version.h Makefile
 	$(CC) $(CPPFLAGS) $(CFLAGS) -include $(BUILD)/version.h -MMD -MP -c $< -o $@
+ifeq ($(STATIC),1)
+	$(if $(filter print,$*),$(OBJCOPY) --redefine-syms=$(BUILD)/static-deps/jpeg-symbols $@)
+endif
 
 $(BUILD)/cui.o $(BUILD)/decoders.o: CFLAGS += -Wno-unused-function
 $(BUILD)/decoders.o: CFLAGS += -Wno-pedantic -Wno-sign-compare

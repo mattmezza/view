@@ -20,7 +20,7 @@ typedef struct {
 typedef enum {
     OPEN, PREV, NEXT, FIRST, LAST, ZOOM_IN, ZOOM_OUT, FIT, ACTUAL,
     FULLSCREEN, GALLERY, SIDEBAR, FIND, FIND_NEXT, FIND_PREV, COPY,
-    UP, DOWN, PAGE_UP, PAGE_DOWN, RELOAD, HELP, QUIT, ACTIONS
+    UP, DOWN, PAGE_UP, PAGE_DOWN, RELOAD, HELP, QUIT, INFO, PRINT, PRESENT, ACTIONS
 } Action;
 
 typedef enum {
@@ -29,8 +29,8 @@ typedef enum {
 
 typedef struct {
     cui_color colors[COLOR_COUNT];
-    bool gallery, sidebar, wrap, upscale, check_updates, xresources;
-    int width, height, font_size, thumb_size, scroll_step, sidebar_width, padding;
+    bool gallery, sidebar, info, wrap, upscale, check_updates, xresources;
+    int width, height, font_size, thumb_size, scroll_step, sidebar_width, info_width, padding;
     double zoom_step;
     char fonts[3][4096];
     struct { KeySym symbol; unsigned mods; } keys[ACTIONS][4];

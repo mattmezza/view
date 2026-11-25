@@ -16,6 +16,8 @@ static bool point(cui_rect r, int x, int y) {
     return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
 }
 
+static bool in_findbar(App *, int, int);
+
 static void atom_init(App *a) {
     static char *names[] = {
         "WM_DELETE_WINDOW", "_NET_WM_STATE_FULLSCREEN", "_NET_WM_STATE",
@@ -122,6 +124,9 @@ bool x11_init(App *a) {
     XFlush(a->display);
     a->gallery = a->config.gallery;
     a->sidebar = a->config.sidebar;
+    a->info = a->config.info;
+    a->thumb_size = a->config.thumb_size;
+    a->sidebar_width = a->config.sidebar_width;
     a->show_cursor = true;
     a->dirty = true;
     return true;
@@ -133,28 +138,73 @@ void x11_close(App *a) {
     if (!a->display) return;
     if (a->ic) XDestroyIC(a->ic);
     if (a->im) XCloseIM(a->im);
-    if (a->invisible_cursor) XFreeCursor(a->display, a->invisible_cursor);
+    for (int i = 0; i < POINTER_COUNT; ++i)
+        if (a->cursors[i]) XFreeCursor(a->display, a->cursors[i]);
     renderer_destroy(&a->renderer);
     if (a->window) XDestroyWindow(a->display, a->window);
     XCloseDisplay(a->display);
 }
 
-void x11_show_cursor(App *a, bool show) {
-    if (show == a->show_cursor) return;
-    a->show_cursor = show;
-    if (show) {
-        XUndefineCursor(a->display, a->window);
-    } else {
-        if (!a->invisible_cursor) {
-            char empty[] = {0};
-            Pixmap pixmap = XCreateBitmapFromData(a->display, a->window, empty, 1, 1);
-            XColor black = {0};
-            a->invisible_cursor = XCreatePixmapCursor(a->display, pixmap, pixmap, &black, &black, 0, 0);
-            XFreePixmap(a->display, pixmap);
+static Cursor bitmap_cursor(App *a, const char *const rows[16], int hot_x, int hot_y) {
+    char bits[32] = {0}, mask[32] = {0};
+    for (int y = 0; rows && y < 16 && rows[y]; ++y) {
+        for (int x = 0; rows[y][x]; ++x) {
+            int offset = y * 2 + x / 8;
+            if (rows[y][x] != ' ') mask[offset] |= 1 << (x % 8);
+            if (rows[y][x] == '.') bits[offset] |= 1 << (x % 8);
         }
-        XDefineCursor(a->display, a->window, a->invisible_cursor);
+    }
+    Pixmap source = XCreateBitmapFromData(a->display, a->window, bits, 16, 16);
+    Pixmap outline = XCreateBitmapFromData(a->display, a->window, mask, 16, 16);
+    XColor white = {.red = 65535, .green = 65535, .blue = 65535}, black = {0};
+    Cursor cursor = XCreatePixmapCursor(a->display, source, outline, &white, &black, hot_x, hot_y);
+    XFreePixmap(a->display, source);
+    XFreePixmap(a->display, outline);
+    return cursor;
+}
+
+void x11_cursor(App *a) {
+    static const char *const zoom[16] = {
+        "   #####", " ##.....##", " #.#####.#", "#.#.....#.#", "#.#..#..#.#", "#.#.###.#.#",
+        "#.#..#..#.#", "#.#.....#.#", " #.#####.##", " ##.....#..#", "   #######..#",
+        "          #..#", "           #..#", "            ###"
+    };
+    static const char *const hand[16] = {
+        "     ###", "   ###.###", "   #.#.#.###", "   #.#.#.#.#", "   #.......#",
+        " ###.......#", " #.........#", "  #........#", "   #.......#",
+        "   #......#", "    #.....#", "    #.....#", "    #######"
+    };
+    Pointer next = POINTER_ARROW;
+    if (!a->show_cursor) next = POINTER_HIDDEN;
+    else if (a->prompt == PROMPT_NONE && !a->presenting) {
+        if (a->drag == DRAG_PAN) next = POINTER_HAND;
+        else if (a->drag == DRAG_STRIP || point(a->layout.strip_grip, a->mx, a->my)) next = POINTER_ROW;
+        else if (a->drag == DRAG_SIDEBAR || point(a->layout.sidebar_grip, a->mx, a->my)) next = POINTER_COLUMN;
+        else if (a->ctrl && a->doc.path && point(a->layout.canvas, a->mx, a->my) &&
+                 !in_findbar(a, a->mx, a->my)) next = POINTER_ZOOM;
+    }
+    if (a->pointer == next) return;
+    if (a->pointer == POINTER_ROW || a->pointer == POINTER_COLUMN ||
+        next == POINTER_ROW || next == POINTER_COLUMN) a->dirty = true;
+    a->pointer = next;
+    if (next == POINTER_ARROW) XUndefineCursor(a->display, a->window);
+    else {
+        if (!a->cursors[next]) {
+            if (next == POINTER_ZOOM || next == POINTER_HAND || next == POINTER_HIDDEN)
+                a->cursors[next] = bitmap_cursor(a, next == POINTER_ZOOM ? zoom : next == POINTER_HAND ? hand : NULL,
+                                                next == POINTER_ZOOM ? 5 : next == POINTER_HAND ? 7 : 0,
+                                                next == POINTER_ZOOM ? 5 : next == POINTER_HAND ? 6 : 0);
+            else a->cursors[next] = XCreateFontCursor(a->display,
+                    next == POINTER_ROW ? XC_sb_v_double_arrow : XC_sb_h_double_arrow);
+        }
+        XDefineCursor(a->display, a->window, a->cursors[next]);
     }
     XFlush(a->display);
+}
+
+void x11_show_cursor(App *a, bool show) {
+    a->show_cursor = show;
+    x11_cursor(a);
 }
 
 void x11_raise(App *a) {
@@ -360,13 +410,32 @@ static void handle_key(App *a, XKeyEvent *event, bool press) {
     KeySym plain = XkbKeycodeToKeysym(a->display, event->keycode, 0, 0);
     if (actual == NoSymbol) actual = plain;
     unsigned mods = event->state & (ShiftMask | ControlMask | Mod1Mask | Mod4Mask);
+    if (plain == XK_Control_L || plain == XK_Control_R) {
+        a->ctrl = press;
+        if (!press) {
+            char keys[32];
+            XQueryKeymap(a->display, keys);
+            KeyCode other = XKeysymToKeycode(a->display, plain == XK_Control_L ? XK_Control_R : XK_Control_L);
+            a->ctrl = other && (keys[other / 8] & (1 << (other % 8)));
+        }
+        a->show_cursor = true;
+        a->cursor_deadline = now() + 1.6;
+    } else a->ctrl = mods & ControlMask;
     bool ctrl = mods & ControlMask;
     bool alt = mods & (Mod1Mask | Mod4Mask);
     if (a->prompt != PROMPT_NONE && press) {
         if (actual == XK_Escape) { app_command(a, UI_DISMISS); return; }
+        if (a->prompt == PROMPT_PRINT) {
+            if ((actual == XK_Return || actual == XK_KP_Enter) &&
+                (a->print.editable || !cui_focused(a->ui))) {
+                app_submit(a);
+                return;
+            }
+            if (actual == XK_Tab || actual == XK_ISO_Left_Tab) a->print.editable = false;
+        }
         if (a->prompt == PROMPT_HELP) {
             if (actual == XK_F1) { app_command(a, UI_DISMISS); return; }
-        } else {
+        } else if (a->prompt != PROMPT_PRINT || (a->print.editable && a->print.job.fd < 0)) {
             size_t length = strlen(a->input);
             if (actual == XK_Return || actual == XK_KP_Enter) app_submit(a);
             else if (ctrl && (plain == XK_v || plain == XK_V))
@@ -392,7 +461,8 @@ static void handle_key(App *a, XKeyEvent *event, bool press) {
     }
     if (press && a->prompt == PROMPT_NONE) {
         if (actual == XK_Escape) {
-            if (a->fullscreen) app_set_fullscreen(a, false);
+            if (a->presenting) app_present(a, false);
+            else if (a->fullscreen) app_set_fullscreen(a, false);
             else if (*a->doc.query) app_command(a, UI_DISMISS);
             else if (a->doc.anchor.page >= 0) {
                 a->doc.anchor.page = a->doc.end.page = -1;
@@ -400,7 +470,11 @@ static void handle_key(App *a, XKeyEvent *event, bool press) {
             }
             return;
         }
-        if (actual != XK_space || !cui_focused(a->ui)) {
+        if (a->presenting || actual != XK_space || !cui_focused(a->ui)) {
+            if (a->presenting && (actual == XK_Return || actual == XK_KP_Enter)) {
+                app_action(a, NEXT);
+                return;
+            }
             for (int i = 0; i < ACTIONS; ++i) {
                 for (int k = 0; k < 4 && a->config.keys[i][k].symbol; ++k) {
                     KeySym wanted = a->config.keys[i][k].symbol;
@@ -447,7 +521,7 @@ static TextPoint pick_text(App *a, int x, int y) {
 
 static bool in_findbar(App *a, int x, int y) {
     cui_rect c = a->layout.canvas;
-    return a->doc.pdf && *a->doc.query && !a->fullscreen &&
+    return a->doc.pdf && *a->doc.query && !a->fullscreen && c.w >= 234 &&
            y >= c.y + 10 && y < c.y + 53 && x >= c.x + c.w - fmin(c.w - 24, 428) - 12 &&
            x < c.x + c.w - 12;
 }
@@ -455,10 +529,25 @@ static bool in_findbar(App *a, int x, int y) {
 static void press_button(App *a, XButtonEvent *e) {
     int x = e->x, y = e->y;
     bool middle = e->button == Button2;
+    if (a->presenting && a->prompt == PROMPT_NONE) {
+        if (e->button == Button1 || e->button == Button5) app_action(a, NEXT);
+        if (e->button == Button3 || e->button == Button4) app_action(a, PREV);
+        return;
+    }
     if (e->button >= Button4 && e->button <= 7) {
+        if (a->prompt == PROMPT_PRINT) {
+            int delta = e->button == Button4 || e->button == 6 ? -70 : 70;
+            a->print.scroll = fmax(0, fmin(a->print.scroll_end, a->print.scroll + delta));
+            a->dirty = true;
+        }
         if (a->prompt != PROMPT_NONE) return;
         int dir = e->button == Button4 || e->button == 6 ? -1 : 1;
-        if (e->state & ControlMask) app_action(a, dir < 0 ? ZOOM_IN : ZOOM_OUT);
+        if ((e->state & ControlMask) && point(a->layout.canvas, x, y) && !in_findbar(a, x, y))
+            app_action(a, dir < 0 ? ZOOM_IN : ZOOM_OUT);
+        else if (point(a->layout.info, x, y)) {
+            a->info_scroll = (int)fmax(0, fmin(a->info_end, a->info_scroll + dir * a->config.scroll_step));
+            a->dirty = true;
+        }
         else if (point(a->layout.strip, x, y)) {
             a->thumbnail_shift = (int)fmax(-a->doc.count, fmin(a->doc.count, a->thumbnail_shift + dir));
             a->dirty = true;
@@ -474,6 +563,17 @@ static void press_button(App *a, XButtonEvent *e) {
         } else if (a->doc.picture.pixels) {
             app_action(a, dir < 0 ? PREV : NEXT);
         }
+        return;
+    }
+    if (a->prompt == PROMPT_NONE && e->button == Button1 &&
+        (point(a->layout.strip_grip, x, y) || point(a->layout.sidebar_grip, x, y))) {
+        bool strip = point(a->layout.strip_grip, x, y);
+        app_close_drag(a);
+        a->drag = strip ? DRAG_STRIP : DRAG_SIDEBAR;
+        a->drag_button = Button1;
+        a->resize_origin = strip ? y : x;
+        a->resize_start = strip ? a->layout.strip.h - 42 : a->layout.sidebar.w;
+        a->dirty = true;
         return;
     }
     if (middle && a->prompt != PROMPT_NONE && a->prompt != PROMPT_HELP) {
@@ -502,6 +602,7 @@ static void press_button(App *a, XButtonEvent *e) {
             a->drag = DRAG_PAN;
         }
     } else a->drag = DRAG_PAN;
+    a->drag_button = e->button;
     a->dirty = true;
 }
 
@@ -512,9 +613,19 @@ static void motion(App *a, int x, int y) {
         app_layout(a);
         a->dirty = true;
     } else if (a->drag == DRAG_TEXT) {
+        unsigned button = a->drag_button;
         TextPoint hit = pick_text(a, x, y);
+        a->drag_button = button;
         if (hit.page >= 0) a->doc.end = hit;
         a->dirty = true;
+    } else if (a->drag == DRAG_STRIP) {
+        a->thumb_size = fmax(40, fmin(360, a->resize_start + a->resize_origin - y));
+        app_layout(a);
+    } else if (a->drag == DRAG_SIDEBAR) {
+        int page = a->doc.current;
+        a->sidebar_width = fmax(100, fmin(460, a->resize_start + x - a->resize_origin));
+        app_layout(a);
+        app_jump(a, page);
     }
     a->mx = x; a->my = y;
     a->cursor_deadline = now() + 1.6;
@@ -549,31 +660,63 @@ void x11_event(App *a, XEvent *e) {
         if (e->xproperty.window == a->window && !a->fallback_fullscreen &&
             e->xproperty.atom == a->state_atom) {
             bool full = has_atom(a, a->window, a->state_atom, a->fullscreen_atom);
-            a->fullscreen_requested = a->fullscreen = full;
+            if (a->presenting && a->fullscreen && !full) {
+                a->fullscreen_requested = a->fullscreen = false;
+                a->presentation_was_fullscreen = false;
+                app_present(a, false);
+            } else if (!a->presenting || full) a->fullscreen_requested = a->fullscreen = full;
             a->cursor_deadline = now() + 1.6;
             if (!full) x11_show_cursor(a, true);
             a->dirty = true;
         }
         break;
-    case KeyPress: handle_key(a, &e->xkey, true); break;
-    case KeyRelease: handle_key(a, &e->xkey, false); break;
+    case KeyPress: handle_key(a, &e->xkey, true); x11_cursor(a); break;
+    case KeyRelease: handle_key(a, &e->xkey, false); x11_cursor(a); break;
     case ButtonPress:
         a->mx = e->xbutton.x; a->my = e->xbutton.y;
+        a->ctrl = e->xbutton.state & ControlMask;
+        a->cursor_deadline = now() + 1.6;
+        a->show_cursor = true;
         press_button(a, &e->xbutton);
+        x11_cursor(a);
         break;
     case ButtonRelease:
-        if (a->drag != DRAG_NONE && (e->xbutton.button == Button1 || e->xbutton.button == Button2))
+        if (a->drag != DRAG_NONE && e->xbutton.button == a->drag_button)
             app_close_drag(a);
-        else if (e->xbutton.button && e->xbutton.button < Button4)
+        else if (!a->presenting && e->xbutton.button && e->xbutton.button < Button4)
             queue_pointer(a, CUI_EVENT_POINTER_UP, e->xbutton.x, e->xbutton.y, e->xbutton.button);
+        x11_cursor(a);
         break;
-    case MotionNotify: motion(a, e->xmotion.x, e->xmotion.y); break;
-    case EnterNotify: queue_pointer(a, CUI_EVENT_POINTER_ENTER, e->xcrossing.x, e->xcrossing.y, 0); break;
-    case LeaveNotify: queue_pointer(a, CUI_EVENT_POINTER_LEAVE, 0, 0, 0); break;
-    case FocusIn: if (a->ic) XSetICFocus(a->ic); break;
+    case MotionNotify:
+        a->ctrl = e->xmotion.state & ControlMask;
+        motion(a, e->xmotion.x, e->xmotion.y);
+        break;
+    case EnterNotify:
+        a->ctrl = e->xcrossing.state & ControlMask;
+        a->mx = e->xcrossing.x; a->my = e->xcrossing.y;
+        x11_cursor(a);
+        queue_pointer(a, CUI_EVENT_POINTER_ENTER, a->mx, a->my, 0);
+        break;
+    case LeaveNotify:
+        if (a->drag == DRAG_NONE) a->mx = a->my = -1;
+        x11_cursor(a);
+        queue_pointer(a, CUI_EVENT_POINTER_LEAVE, 0, 0, 0);
+        break;
+    case FocusIn: {
+        if (a->ic) XSetICFocus(a->ic);
+        Window root, child;
+        int root_x, root_y;
+        unsigned mask = 0;
+        if (XQueryPointer(a->display, a->window, &root, &child, &root_x, &root_y, &a->mx, &a->my, &mask))
+            a->ctrl = mask & ControlMask;
+        x11_cursor(a);
+        break;
+    }
     case FocusOut:
         if (a->ic) XUnsetICFocus(a->ic);
+        a->ctrl = false;
         app_close_drag(a);
+        x11_cursor(a);
         queue_pointer(a, CUI_EVENT_CANCEL, 0, 0, 0);
         break;
     case DestroyNotify: a->window = None; a->running = false; break;

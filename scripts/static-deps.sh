@@ -24,12 +24,12 @@ cmake --build "$scratch/tiff" --parallel 4
 cmake --install "$scratch/tiff"
 
 # PDFium supplies a different libjpeg. Keep its internal symbols independent
-# from the libjpeg ABI the system TIFF headers were compiled against.
+# from the system libjpeg ABI used by TIFF and image printing.
 jpeg=$(cc -print-file-name=libjpeg.a)
 nm -g --defined-only "$jpeg" |
-    awk 'NF == 3 {print $3, "view_tiff_" $3}' | sort -u > "$scratch/jpeg-symbols"
-objcopy --redefine-syms="$scratch/jpeg-symbols" "$jpeg" "$prefix/lib/libview-jpeg.a"
-objcopy --redefine-syms="$scratch/jpeg-symbols" "$prefix/lib/libtiff.a"
+    awk 'NF == 3 {print $3, "view_jpeg_" $3}' | sort -u > "$prefix/jpeg-symbols"
+objcopy --redefine-syms="$prefix/jpeg-symbols" "$jpeg" "$prefix/lib/libview-jpeg.a"
+objcopy --redefine-syms="$prefix/jpeg-symbols" "$prefix/lib/libtiff.a"
 
 cmake -S "$scratch/libavif-1.4.2" -B "$scratch/avif" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_INSTALL_LIBDIR=lib \

@@ -11,13 +11,14 @@
 const char *const action_names[ACTIONS] = {
     "open", "prev", "next", "first", "last", "zoom-in", "zoom-out", "fit", "actual",
     "fullscreen", "gallery", "sidebar", "find", "find-next", "find-prev", "copy",
-    "up", "down", "page-up", "page-down", "reload", "help", "quit"
+    "up", "down", "page-up", "page-down", "reload", "help", "quit", "info", "print", "present"
 };
 
 static const char *const default_keys[ACTIONS] = {
     "Ctrl+o", "Left,h", "Right,l", "Home", "End", "equal,plus,KP_Add", "minus,KP_Subtract",
     "0", "1", "f,F11", "g", "t", "Ctrl+f,slash", "n,F3", "Shift+n,Shift+F3", "Ctrl+c",
-    "Up,k", "Down,j", "Page_Up", "Page_Down,space", "Ctrl+r", "F1,Shift+slash", "q,Ctrl+w"
+    "Up,k", "Down,j", "Page_Up", "Page_Down,space", "Ctrl+r", "F1,Shift+slash", "q,Ctrl+w",
+    "Ctrl+i", "Ctrl+p", "F5"
 };
 
 static const char *const color_names[COLOR_COUNT] = {
@@ -125,7 +126,7 @@ void config_load(Config *c, Display *dpy) {
     *c = (Config){
         .gallery = true, .sidebar = true, .wrap = true, .xresources = true, .check_updates = true,
         .width = 1120, .height = 780, .font_size = 14, .thumb_size = 78,
-        .scroll_step = 108, .sidebar_width = 168, .padding = 28, .zoom_step = 1.25,
+        .scroll_step = 108, .sidebar_width = 168, .info_width = 268, .padding = 28, .zoom_step = 1.25,
     };
     for (int i = 0; i < ACTIONS; ++i) key_list(c, i, default_keys[i]);
 
@@ -148,12 +149,13 @@ void config_load(Config *c, Display *dpy) {
 
         struct { const char *name; int *field; int min, max; } sizes[] = {
             {"width", &c->width, 360, 7680}, {"height", &c->height, 260, 4320},
-            {"font_size", &c->font_size, 10, 28}, {"thumb_size", &c->thumb_size, 40, 160},
+            {"font_size", &c->font_size, 10, 28}, {"thumb_size", &c->thumb_size, 40, 360},
             {"scroll_step", &c->scroll_step, 16, 1200},
-            {"sidebar_width", &c->sidebar_width, 100, 320}, {"padding", &c->padding, 4, 96},
+            {"sidebar_width", &c->sidebar_width, 100, 460}, {"info_width", &c->info_width, 180, 520},
+            {"padding", &c->padding, 4, 96},
         };
         struct { const char *name; bool *field; } flags[] = {
-            {"gallery", &c->gallery}, {"sidebar", &c->sidebar}, {"wrap", &c->wrap},
+            {"gallery", &c->gallery}, {"sidebar", &c->sidebar}, {"info", &c->info}, {"wrap", &c->wrap},
             {"upscale", &c->upscale}, {"check_updates", &c->check_updates},
             {"xresources", &c->xresources},
         };

@@ -22,7 +22,8 @@ static void help(FILE *out) {
           "       view status | raise | quit | reload\n"
           "       view prev | next | first | last | goto NUMBER\n"
           "       view zoom PERCENT | zoom-in | zoom-out | fit | width | actual\n"
-          "       view fullscreen|gallery|sidebar [on|off|toggle]\n"
+          "       view fullscreen|gallery|sidebar|info|present [on|off|toggle]\n"
+          "       view print\n"
           "       view find TEXT | find-next | find-prev | clear-search | copy\n"
           "       view up | down | page-up | page-down | scroll PIXELS\n"
           "       view --socket | --version | --help\n", out);
@@ -67,9 +68,14 @@ static void status(App *a, char reply[IPC_MAX]) {
     int n = snprintf(reply, IPC_MAX,
         "{\"version\":\"%s\",\"path\":%s,\"kind\":\"%s\",\"index\":%d,\"count\":%d,"
         "\"zoom\":%.2f,\"fullscreen\":%s,\"gallery\":%s,\"sidebar\":%s,"
+        "\"info\":%s,\"presenting\":%s,\"thumbnail_height\":%.0f,\"sidebar_width\":%.0f,"
+        "\"metadata_fields\":%d,\"metadata_loading\":%s,"
         "\"query\":", VIEW_VERSION, path, d->pdf ? "pdf" : d->picture.pixels ? "image" : "empty",
         d->count ? d->current + 1 : 0, d->count, a->layout.scale * 100,
-        a->fullscreen ? "true" : "false", a->gallery ? "true" : "false", a->sidebar ? "true" : "false");
+        a->fullscreen ? "true" : "false", a->gallery ? "true" : "false", a->sidebar ? "true" : "false",
+        a->info ? "true" : "false", a->presenting ? "true" : "false",
+        a->layout.strip.h ? a->layout.strip.h - 42 : 0, a->layout.sidebar.w,
+        a->metadata.count, a->metadata.extra.fd >= 0 ? "true" : "false");
     size_t remaining = IPC_MAX - n;
     size_t len = strlen(query);
     if (len + 140 >= remaining) strcpy(query, "\"\"");
@@ -121,16 +127,22 @@ static bool command(App *a, int argc, const char *const *argv, char reply[IPC_MA
         app_zoom(a, SCALE_WIDTH, 1);
     } else if (!strcmp(cmd, "clear-search") && argc == 1) {
         if (d->pdf) document_search(d, "");
-    } else if ((action == FULLSCREEN || action == GALLERY || action == SIDEBAR) && argc <= 2) {
+    } else if ((action == PRESENT || action == PRINT) && !d->path) {
+        strcpy(reply, "Open a file first");
+        return false;
+    } else if ((action == FULLSCREEN || action == GALLERY || action == SIDEBAR ||
+                action == INFO || action == PRESENT) && argc <= 2) {
         bool before = action == FULLSCREEN ? a->fullscreen_requested :
-                      action == GALLERY ? a->gallery : a->sidebar;
+                      action == GALLERY ? a->gallery : action == SIDEBAR ? a->sidebar :
+                      action == INFO ? a->info : a->presenting;
         bool after;
         if (!parse_toggle(argc == 2 ? arg : "toggle", before, &after)) {
             strcpy(reply, "Expected on, off, or toggle");
             return false;
         }
         if (before != after) {
-            if (action == SIDEBAR && !d->pdf) a->sidebar = after;
+            if (action == FULLSCREEN) app_set_fullscreen(a, after);
+            else if (action == SIDEBAR && !d->pdf) a->sidebar = after;
             else app_action(a, action);
         }
     } else if (action != ACTIONS && argc == 1) {
@@ -177,6 +189,7 @@ static void interval(int *ms, double deadline, double time) {
 
 static int run(Ipc ipc, const char *initial, int notify) {
     App a = {.ipc = ipc, .running = true, .update_fd = -1, .drag_page_index = -1,
+        .metadata.extra.fd = -1, .print.printers.fd = -1, .print.job.fd = -1,
         .doc = {.anchor.page = -1, .end.page = -1, .active_match = -1},
         .zoom = 1, .scale_mode = SCALE_FIT};
     struct sigaction handler = {.sa_handler = on_signal};
@@ -216,7 +229,7 @@ static int run(Ipc ipc, const char *initial, int notify) {
         if (!a.running || stop) break;
         double time = now();
         if (a.toast_until && a.toast_until <= time) { a.toast_until = 0; a.dirty = true; }
-        if (a.fullscreen && a.show_cursor && a.prompt == PROMPT_NONE &&
+        if (a.fullscreen && a.show_cursor && a.prompt == PROMPT_NONE && a.pointer != POINTER_ZOOM &&
             a.drag == DRAG_NONE && a.cursor_deadline <= time) x11_show_cursor(&a, false);
         if (!a.fullscreen || a.prompt != PROMPT_NONE) x11_show_cursor(&a, true);
         if (a.thumb_pending && a.next_thumbnail <= time) a.dirty = true;
@@ -228,12 +241,16 @@ static int run(Ipc ipc, const char *initial, int notify) {
             if (a.doc.active_match < 0 && a.doc.num_matches) app_find_match(&a, 1);
             a.dirty = true;
         }
-        if (a.dirty) app_draw(&a);
+        if (a.dirty) {
+            app_draw(&a);
+            x11_cursor(&a);
+        }
         if (!a.running || stop) break;
         int timeout = a.dirty || a.doc.searching || XPending(a.display) ? 0 : -1;
         time = now();
         if (a.toast_until) interval(&timeout, a.toast_until, time);
-        if (a.fullscreen && a.show_cursor && a.drag == DRAG_NONE && a.prompt == PROMPT_NONE)
+        if (a.fullscreen && a.show_cursor && a.drag == DRAG_NONE && a.prompt == PROMPT_NONE &&
+            a.pointer != POINTER_ZOOM)
             interval(&timeout, a.cursor_deadline, time);
         if (a.thumb_pending) interval(&timeout, a.next_thumbnail, time);
         if (*a.hover_label && a.hover_since + .55 > time)
@@ -241,17 +258,29 @@ static int run(Ipc ipc, const char *initial, int notify) {
         if (a.config.check_updates) interval(&timeout, a.update_at, time);
         struct pollfd descriptors[] = {
             {ConnectionNumber(a.display), POLLIN, 0}, {a.ipc.server, POLLIN, 0},
-            {a.update_fd, POLLIN, 0}
+            {a.update_fd, POLLIN, 0}, {a.metadata.extra.fd, POLLIN, 0},
+            {a.print.printers.fd, POLLIN, 0}, {a.print.job.fd, POLLIN, 0}
         };
         int ready = poll(descriptors, sizeof descriptors / sizeof *descriptors, timeout);
         if (ready > 0) {
             if (descriptors[0].revents & (POLLERR | POLLHUP)) break;
             if (descriptors[1].revents & POLLIN) receive(&a);
             if (descriptors[2].revents & (POLLIN | POLLERR | POLLHUP)) update_read(&a);
+            if (descriptors[3].fd >= 0 && a.metadata.extra.fd == descriptors[3].fd &&
+                descriptors[3].revents && job_read(&a.metadata.extra)) {
+                metadata_extra(&a.metadata);
+                a.dirty = true;
+            }
+            if (descriptors[4].fd >= 0 && a.print.printers.fd == descriptors[4].fd &&
+                descriptors[4].revents && job_read(&a.print.printers)) print_discover(&a);
+            if (descriptors[5].fd >= 0 && descriptors[5].revents && job_read(&a.print.job)) print_done(&a);
         } else if (ready < 0 && errno != EINTR) break;
-        if (!a.update_pid) while (waitpid(-1, NULL, WNOHANG) > 0) {}
+        if (!a.update_pid && !a.metadata.extra.pid && !a.print.printers.pid && !a.print.job.pid)
+            while (waitpid(-1, NULL, WNOHANG) > 0) {}
     }
     update_close(&a);
+    metadata_close(&a.metadata);
+    print_close(&a);
     app_close_drag(&a);
     document_close(&a.doc);
     free(a.clipboard);

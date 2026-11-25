@@ -39,9 +39,11 @@ typedef struct {
 } Document;
 
 typedef enum { DOC_OK, DOC_FAIL, DOC_PASSWORD } OpenResult;
+void document_init(void);
 void document_close(Document *);
 OpenResult document_open(Document *, const char *path, const char *password, char error[256]);
 bool document_image(Document *, int index, char error[256]);
+Image document_render_page(const Document *, int index, int width, int flags);
 Image *document_cached(Document *, int index, bool thumb, int width, bool load, bool *pending);
 void document_search(Document *, const char *);
 void document_search_step(Document *);

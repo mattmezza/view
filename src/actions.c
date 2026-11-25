@@ -19,6 +19,7 @@ void app_close_drag(App *a) {
     a->drag_page = NULL;
     a->drag_page_index = -1;
     a->drag = DRAG_NONE;
+    a->drag_button = 0;
 }
 
 static void window_title(App *a) {
@@ -44,10 +45,12 @@ bool app_open(App *a, const char *path, const char *password, char error[256]) {
     }
     free(full);
     if (result != DOC_OK) return false;
+    metadata_close(&a->metadata);
+    if (a->presenting) app_present(a, false);
     a->scale_mode = a->doc.pdf ? SCALE_WIDTH : SCALE_FIT;
     a->zoom = 1;
     a->scroll = a->pan = 0;
-    a->thumbnail_shift = a->sidebar_shift = 0;
+    a->thumbnail_shift = a->sidebar_shift = a->info_scroll = 0;
     a->prompt = PROMPT_NONE;
     a->toast_until = 0;
     a->dirty = true;
@@ -63,8 +66,10 @@ void app_item(App *a, int index) {
     if (index == d->current) return;
     char error[256] = "";
     if (document_image(d, index, error)) {
+        metadata_close(&a->metadata);
         a->pan = a->scroll = 0;
         a->thumbnail_shift = 0;
+        a->info_scroll = 0;
         window_title(a);
         a->dirty = true;
     } else if (*error) app_toast(a, error);
@@ -73,6 +78,15 @@ void app_item(App *a, int index) {
 static void navigate(App *a, int dir) {
     if (!a->doc.count) return;
     int index = a->doc.current + dir;
+    if (a->presenting && !a->doc.pdf) {
+        int current = a->doc.current;
+        while (index >= 0 && index < a->doc.count) {
+            app_item(a, index);
+            if (a->doc.current != current) break;
+            index += dir;
+        }
+        return;
+    }
     if (!a->doc.pdf && a->config.wrap) index = (index + a->doc.count) % a->doc.count;
     app_item(a, index);
 }
@@ -86,6 +100,7 @@ void app_set_clipboard(App *a, char *text) {
 }
 
 void app_set_fullscreen(App *a, bool on) {
+    if (!on && a->presenting) app_present(a, false);
     if (a->fullscreen_requested == on) return;
     a->fullscreen_requested = on;
     a->fullscreen = on;
@@ -113,8 +128,39 @@ void app_set_fullscreen(App *a, bool on) {
     a->dirty = true;
 }
 
+void app_present(App *a, bool on) {
+    if (a->presenting == on || (on && !a->doc.path)) return;
+    app_close_drag(a);
+    a->last_click = 0;
+    if (on) {
+        a->before_presentation.mode = a->scale_mode;
+        a->before_presentation.zoom = a->zoom;
+        a->before_presentation.pan = a->pan;
+        a->before_presentation.scroll = a->scroll;
+        a->before_presentation.page = a->doc.current;
+        a->presentation_was_fullscreen = a->fullscreen_requested;
+        a->presenting = true;
+        a->pan = a->scroll = 0;
+        app_prompt(a, PROMPT_NONE);
+        app_set_fullscreen(a, true);
+    } else {
+        int page = a->doc.current;
+        a->presenting = false;
+        a->scale_mode = a->before_presentation.mode;
+        a->zoom = a->before_presentation.zoom;
+        a->pan = a->before_presentation.pan;
+        a->scroll = a->before_presentation.scroll;
+        app_set_fullscreen(a, a->presentation_was_fullscreen);
+        if (a->doc.pdf && page != a->before_presentation.page) {
+            app_layout(a);
+            app_jump(a, page);
+        }
+    }
+    a->dirty = true;
+}
+
 void app_zoom(App *a, ScaleMode mode, double value) {
-    if (!a->doc.path) return;
+    if (!a->doc.path || a->presenting) return;
     app_layout(a);
     double old = a->layout.scale;
     int page = a->doc.current;
@@ -148,6 +194,7 @@ void app_find_match(App *a, int dir) {
     if (d->active_match < 0) d->active_match = dir < 0 ? n - 1 : 0;
     else d->active_match = (d->active_match + dir + n) % n;
     Match m = d->matches[d->active_match];
+    if (a->presenting) { app_jump(a, m.page); return; }
     FPDF_PAGE page;
     FPDF_TEXTPAGE text = document_text(d, m.page, &page);
     bool positioned = false;
@@ -175,12 +222,14 @@ void app_find_match(App *a, int dir) {
 }
 
 void app_scroll(App *a, double px) {
+    if (a->presenting) return;
     a->scroll += px;
     a->dirty = true;
 }
 
 void app_prompt(App *a, Prompt prompt) {
     app_close_drag(a);
+    if (a->prompt == PROMPT_PRINT && prompt != PROMPT_PRINT) job_close(&a->print.printers, true);
     a->prompt = prompt;
     a->prompt_error[0] = 0;
     a->input[0] = 0;
@@ -199,7 +248,9 @@ void app_prompt(App *a, Prompt prompt) {
 }
 
 void app_submit(App *a) {
-    if (a->prompt == PROMPT_FIND) {
+    if (a->prompt == PROMPT_PRINT) {
+        print_submit(a);
+    } else if (a->prompt == PROMPT_FIND) {
         document_search(&a->doc, a->input);
         app_prompt(a, PROMPT_NONE);
     } else if (a->prompt == PROMPT_OPEN || a->prompt == PROMPT_PASSWORD) {
@@ -228,7 +279,10 @@ void app_action(App *a, Action action) {
     case ZOOM_OUT: app_zoom(a, SCALE_MANUAL, a->layout.scale / a->config.zoom_step); break;
     case FIT: app_zoom(a, SCALE_FIT, 1); break;
     case ACTUAL: app_zoom(a, SCALE_ACTUAL, 1); break;
-    case FULLSCREEN: app_set_fullscreen(a, !a->fullscreen_requested); break;
+    case FULLSCREEN:
+        if (a->presenting) app_present(a, false);
+        else app_set_fullscreen(a, !a->fullscreen_requested);
+        break;
     case GALLERY: a->gallery = !a->gallery; break;
     case SIDEBAR:
         if (d->pdf) { int page = d->current; a->sidebar = !a->sidebar; app_layout(a); app_jump(a, page); }
@@ -243,10 +297,14 @@ void app_action(App *a, Action action) {
             else free(text);
         }
         break;
-    case UP: app_scroll(a, -a->config.scroll_step); break;
-    case DOWN: app_scroll(a, a->config.scroll_step); break;
-    case PAGE_UP: if (d->pdf) app_scroll(a, -a->layout.canvas.h * .87); else navigate(a, -1); break;
-    case PAGE_DOWN: if (d->pdf) app_scroll(a, a->layout.canvas.h * .87); else navigate(a, 1); break;
+    case UP:
+        if (a->presenting) navigate(a, -1); else app_scroll(a, -a->config.scroll_step);
+        break;
+    case DOWN:
+        if (a->presenting) navigate(a, 1); else app_scroll(a, a->config.scroll_step);
+        break;
+    case PAGE_UP: if (d->pdf && !a->presenting) app_scroll(a, -a->layout.canvas.h * .87); else navigate(a, -1); break;
+    case PAGE_DOWN: if (d->pdf && !a->presenting) app_scroll(a, a->layout.canvas.h * .87); else navigate(a, 1); break;
     case RELOAD: {
         bool old_updates = a->config.check_updates;
         config_load(&a->config, a->display);
@@ -254,6 +312,9 @@ void app_action(App *a, Action action) {
         cui_text_metrics_changed(a->ui);
         a->gallery = a->config.gallery;
         a->sidebar = a->config.sidebar;
+        a->info = a->config.info;
+        a->thumb_size = a->config.thumb_size;
+        a->sidebar_width = a->config.sidebar_width;
         if (!a->config.check_updates) {
             *a->update = 0;
             update_close(a);
@@ -265,12 +326,26 @@ void app_action(App *a, Action action) {
     }
     case HELP: app_prompt(a, PROMPT_HELP); break;
     case QUIT: a->running = false; break;
+    case INFO: {
+        int page = d->current;
+        a->info = !a->info;
+        app_layout(a);
+        if (d->pdf) app_jump(a, page);
+        break;
+    }
+    case PRESENT: app_present(a, !a->presenting); break;
+    case PRINT: if (d->path) print_open(a); break;
     case ACTIONS: break;
     }
     a->dirty = true;
 }
 
 void app_command(App *a, int command) {
+    if (command >= UI_PRINT_STEP && command < UI_PRINT_STEP + PRINT_FIELDS * 2) {
+        int step = command - UI_PRINT_STEP;
+        print_step(a, step / 2, step % 2 ? 1 : -1);
+        return;
+    }
     switch (command) {
     case UI_SUBMIT: app_submit(a); break;
     case UI_DISMISS:
@@ -291,6 +366,7 @@ void app_command(App *a, int command) {
     case UI_FIT_TOGGLE:
         app_zoom(a, a->scale_mode == SCALE_FIT && a->doc.pdf ? SCALE_WIDTH : SCALE_FIT, 1);
         break;
+    case UI_PRINT_RANGE: a->print.editable = a->dirty = true; break;
     default: break;
     }
 }
