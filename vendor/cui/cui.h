@@ -5185,7 +5185,12 @@ void Clay__CloseElement(void) {
     Clay_LayoutConfig *layoutConfig = &openLayoutElement->config.layout;
     bool elementHasClipHorizontal = openLayoutElement->config.clip.horizontal;
     bool elementHasClipVertical = openLayoutElement->config.clip.vertical;
-    if (elementHasClipHorizontal || elementHasClipVertical || openLayoutElement->config.floating.attachTo != CLAY_ATTACH_TO_NONE) {
+    /* View: floating and clipping each push a separate entry. Match both
+       pushes so an absolute clipped element cannot clip its next sibling. */
+    if (elementHasClipHorizontal || elementHasClipVertical) {
+        context->openClipElementStack.length--;
+    }
+    if (openLayoutElement->config.floating.attachTo != CLAY_ATTACH_TO_NONE) {
         context->openClipElementStack.length--;
     }
 
