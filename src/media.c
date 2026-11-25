@@ -4,9 +4,12 @@
 #include "nanosvg.h"
 #include "nanosvgrast.h"
 #include <webp/decode.h>
+#include <webp/demux.h>
 #include <tiffio.h>
 #include <avif/avif.h>
 #include <ctype.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,7 +23,7 @@ const char *const mime_types[] = {
     "image/avif", "image/tiff", "image/bmp", "image/x-ms-bmp", "image/x-tga", "image/vnd.microsoft.icon",
     "image/x-icon", "image/svg+xml", "image/x-portable-bitmap", "image/x-portable-graymap",
     "image/x-portable-pixmap", "image/x-portable-anymap", "image/vnd.adobe.photoshop",
-    "image/x-hdr", NULL
+    "image/x-hdr", "image/qoi", NULL
 };
 
 double now(void) {
@@ -35,11 +38,13 @@ const char *base_name(const char *path) {
 }
 
 bool read_file(const char *path, size_t limit, unsigned char **data, size_t *size) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0) return false;
     struct stat st;
-    if (stat(path, &st) || !S_ISREG(st.st_mode) || st.st_size < 1 ||
-        (uintmax_t)st.st_size > limit) return false;
-    FILE *file = fopen(path, "rb");
-    if (!file) return false;
+    if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_size < 1 ||
+        (uintmax_t)st.st_size > limit) { close(fd); return false; }
+    FILE *file = fdopen(fd, "rb");
+    if (!file) { close(fd); return false; }
     size_t length = st.st_size;
     unsigned char *buffer = malloc(length + 1);
     bool ok = buffer && fread(buffer, 1, length, file) == length;
@@ -373,6 +378,46 @@ static void orient(Image *im, int orientation) {
     *im = out;
 }
 
+static Image webp_image(const unsigned char *bytes, size_t n, int edge) {
+    WebPDecoderConfig config;
+    Image im = {0};
+    if (!WebPInitDecoderConfig(&config) || WebPGetFeatures(bytes, n, &config.input) != VP8_STATUS_OK)
+        return im;
+    int w = config.input.width, h = config.input.height;
+    if (!sane(w, h)) return im;
+    if (config.input.has_animation) {
+        if ((uint64_t)w * h > 24000000) return im;
+        WebPData input = {bytes, n};
+        WebPAnimDecoderOptions options;
+        if (!WebPAnimDecoderOptionsInit(&options)) return im;
+        options.color_mode = MODE_RGBA;
+        WebPAnimDecoder *decoder = WebPAnimDecoderNew(&input, &options);
+        uint8_t *pixels;
+        int timestamp;
+        if (decoder && WebPAnimDecoderGetNext(decoder, &pixels, &timestamp)) {
+            im = make_image(w, h);
+            if (im.pixels) memcpy(im.pixels, pixels, (size_t)w * h * 4);
+        }
+        WebPAnimDecoderDelete(decoder);
+        return im;
+    }
+
+    double scale = edge ? fmin(1, edge / (double)(w > h ? w : h)) : 1;
+    im = make_image(fmax(1, round(w * scale)), fmax(1, round(h * scale)));
+    if (!im.pixels) return im;
+    config.output.colorspace = MODE_RGBA;
+    config.output.is_external_memory = 1;
+    config.output.u.RGBA.rgba = im.pixels;
+    config.output.u.RGBA.stride = im.w * 4;
+    config.output.u.RGBA.size = (size_t)im.w * im.h * 4;
+    config.options.use_scaling = scale < 1;
+    config.options.scaled_width = im.w;
+    config.options.scaled_height = im.h;
+    if (WebPDecode(bytes, n, &config) != VP8_STATUS_OK) image_free(&im);
+    WebPFreeDecBuffer(&config.output);
+    return im;
+}
+
 Image image_load(const char *path, int edge) {
     unsigned char *bytes;
     size_t n;
@@ -382,26 +427,7 @@ Image image_load(const char *path, int edge) {
     if (extension(path, "svg")) {
         im = svg_image(bytes, edge);
     } else if (n >= 12 && !memcmp(bytes, "RIFF", 4) && !memcmp(bytes + 8, "WEBP", 4)) {
-        int w, h;
-        if (WebPGetInfo(bytes, n, &w, &h) && sane(w, h)) {
-            WebPDecoderConfig config;
-            if (WebPInitDecoderConfig(&config)) {
-                double scale = edge ? fmin(1, edge / (double)(w > h ? w : h)) : 1;
-                im = make_image(fmax(1, round(w * scale)), fmax(1, round(h * scale)));
-                if (im.pixels) {
-                    config.output.colorspace = MODE_RGBA;
-                    config.output.is_external_memory = 1;
-                    config.output.u.RGBA.rgba = im.pixels;
-                    config.output.u.RGBA.stride = im.w * 4;
-                    config.output.u.RGBA.size = (size_t)im.w * im.h * 4;
-                    config.options.use_scaling = scale < 1;
-                    config.options.scaled_width = im.w;
-                    config.options.scaled_height = im.h;
-                    if (WebPDecode(bytes, n, &config) != VP8_STATUS_OK) image_free(&im);
-                    WebPFreeDecBuffer(&config.output);
-                }
-            }
-        }
+        im = webp_image(bytes, n, edge);
     } else if (extension(path, "tif") || extension(path, "tiff") ||
                (n >= 4 && (!memcmp(bytes, "II\x2a\0", 4) || !memcmp(bytes, "MM\0\x2a", 4)))) {
         im = tiff_image(path);

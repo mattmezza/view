@@ -1,0 +1,67 @@
+name: Static release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          curl -fsSL --retry 3 https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/llvm.asc"
+          fingerprint=$(gpg --show-keys --with-colons "$RUNNER_TEMP/llvm.asc" | awk -F: '$1 == "fpr" {print $10; exit}')
+          test "$fingerprint" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          sudo install -m644 "$RUNNER_TEMP/llvm.asc" /usr/share/keyrings/view-llvm.asc
+          echo 'deb [signed-by=/usr/share/keyrings/view-llvm.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main' |
+            sudo tee /etc/apt/sources.list.d/view-llvm.list
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config lld-22 \
+            libx11-dev libwebp-dev libjpeg-dev zlib1g-dev libaom-dev xvfb xauth
+      - name: Build static executable
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          make -j"$(nproc)" STATIC=1 LLD_DIR=/usr/lib/llvm-22/bin VERSION="$TAG"
+          if readelf -l build/static/view | grep -q INTERP ||
+             readelf -d build/static/view | grep -q NEEDED; then
+            echo 'The release binary has dynamic dependencies.' >&2
+            exit 1
+          fi
+          test "$(build/static/view --version)" = "$TAG"
+      - name: Smoke-test in Xvfb
+        run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke.py build/static/view
+      - name: Attach binary to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p build/release
+          name="view-linux-$ARCH"
+          strip -o "build/release/$name" build/static/view
+          (cd build/release && sha256sum "$name" > "$name.sha256")
+          sh scripts/notices.sh build/static > "build/release/$name-licenses.txt"
+          gh release upload "$TAG" "build/release/$name" "build/release/$name.sha256" \
+            "build/release/$name-licenses.txt" --repo "$GITHUB_REPOSITORY" --clobber

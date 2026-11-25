@@ -6,12 +6,13 @@ PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 DATADIR ?= $(PREFIX)/share
 DESTDIR ?=
-BUILD ?= build
 STATIC ?= 0
+BUILD ?= $(if $(filter 1,$(STATIC)),build/static,build)
+LLD_DIR ?=
 PDFIUM ?= $(BUILD)/pdfium
 PKG_CONFIG ?= pkg-config
 
-PACKAGES := x11 libwebp
+PACKAGES := x11 libwebpdemux libwebp
 ifeq ($(STATIC),1)
 CODEC_DEPS := $(BUILD)/static-deps/.ready
 CODEC_CFLAGS := -I$(abspath $(BUILD)/static-deps/include)
@@ -26,7 +27,7 @@ CPPFLAGS += -D_GNU_SOURCE -DFPDF_STATIC -Ivendor/cui -Ivendor/stb -Ivendor/nanos
 CPPFLAGS += $(CODEC_CFLAGS) $(shell $(PKG_CONFIG) --cflags $(PACKAGES))
 CFLAGS ?= -O2
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -ffunction-sections -fdata-sections
-LDFLAGS += -fuse-ld=lld -Wl,--gc-sections
+LDFLAGS += $(if $(LLD_DIR),-B$(LLD_DIR)/) -fuse-ld=lld -Wl,--gc-sections
 LDLIBS += -Wl,--start-group $(PDFIUM)/lib/libpdfium.a $(PDFIUM)/lib/libc++.a \
     $(PDFIUM)/lib/libc++abi.a $(CODEC_LIBS) \
     $(shell $(PKG_CONFIG) $(PKG_FLAGS) --libs $(PACKAGES)) -pthread -lm -Wl,--end-group
@@ -42,10 +43,10 @@ ifneq ($(filter clean,$(MAKECMDGOALS)),)
 endif
 all: $(TARGET)
 
-$(TARGET): $(OBJECTS) $(BUILD)/assets.o $(PDFIUM)/.ready $(CODEC_DEPS)
+$(TARGET): $(OBJECTS) $(BUILD)/assets.o $(PDFIUM)/.ready $(CODEC_DEPS) Makefile
 	$(CC) $(LDFLAGS) $(OBJECTS) $(BUILD)/assets.o $(LDLIBS) -o $@
 
-$(BUILD)/%.o: src/%.c $(PDFIUM)/.ready $(CODEC_DEPS) $(BUILD)/version.h
+$(BUILD)/%.o: src/%.c $(PDFIUM)/.ready $(CODEC_DEPS) $(BUILD)/version.h Makefile
 	$(CC) $(CPPFLAGS) $(CFLAGS) -include $(BUILD)/version.h -MMD -MP -c $< -o $@
 
 $(BUILD)/cui.o $(BUILD)/decoders.o: CFLAGS += -Wno-unused-function
@@ -63,7 +64,7 @@ $(PDFIUM)/.ready: scripts/pdfium.sh
 $(BUILD)/static-deps/.ready: scripts/static-deps.sh
 	sh $< $(abspath $(BUILD)/static-deps)
 
-$(BUILD)/assets.S: scripts/embed.py $(FONTS) $(ICONS) assets/view.svg
+$(BUILD)/assets.S: scripts/embed.py $(FONTS) $(ICONS) assets/view.svg Makefile
 	@mkdir -p $(BUILD)
 	$(PYTHON) scripts/embed.py font_regular=$(word 1,$(FONTS)) font_bold=$(word 2,$(FONTS)) \
 	    font_mono=$(word 3,$(FONTS)) view_icon=assets/view.svg \

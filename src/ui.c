@@ -12,13 +12,13 @@
 extern const char icon_folder_open[], icon_photo[], icon_document_text[], icon_squares_2x2[],
     icon_document[], icon_chevron_left[], icon_chevron_right[], icon_magnifying_glass[],
     icon_magnifying_glass_plus[], icon_magnifying_glass_minus[], icon_arrows_pointing_out[],
-    icon_arrows_pointing_in[], icon_x_mark[], icon_arrow_up[], icon_arrow_down[], icon_arrow_down_tray[];
+    icon_x_mark[], icon_arrow_up[], icon_arrow_down[], icon_arrow_down_tray[];
 
 void app_icons(App *a) {
     const char *const sources[] = {
         icon_folder_open, icon_photo, icon_document_text, icon_squares_2x2, icon_document,
         icon_chevron_left, icon_chevron_right, icon_magnifying_glass, icon_magnifying_glass_plus,
-        icon_magnifying_glass_minus, icon_arrows_pointing_out, icon_arrows_pointing_in,
+        icon_magnifying_glass_minus, icon_arrows_pointing_out,
         icon_x_mark, icon_arrow_up, icon_arrow_down, icon_arrow_down_tray,
     };
     NSVGrasterizer *rast = nsvgCreateRasterizer();

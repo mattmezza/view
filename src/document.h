@@ -24,7 +24,6 @@ typedef struct {
     PageSize *pages;
     double max_width, total_height;
     Image picture, scaled_picture;
-    long long scaled_revision;
     CacheEntry cache[96];
     uint64_t cache_age;
     size_t cache_bytes;

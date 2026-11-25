@@ -77,9 +77,12 @@ def main():
         bad.write_text("this file is corrupt")
 
         def cli(*args, check=True):
-            return subprocess.run(
-                [str(binary), *map(str, args)], check=check, env=env,
+            result = subprocess.run(
+                [str(binary), *map(str, args)], env=env,
                 cwd=root, capture_output=True, text=True, timeout=15)
+            if check and result.returncode:
+                raise AssertionError(f"{args}: {result.stderr.strip()}")
+            return result
 
         def status():
             return json.loads(cli("status").stdout)
