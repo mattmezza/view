@@ -181,6 +181,11 @@ def main():
             wait_for(lambda: cursor_hotspot() == (7, 6))
             xdo("mousemove", "--window", win, 395, 328, "mouseup", 1)
             wait_for(lambda: cursor_hotspot() != (7, 6))
+            cli("fullscreen", "on")
+            wait_for(lambda: cursor_hotspot() == (0, 0))
+            xdo("mousemove", "--window", win, 380, 320)
+            wait_for(lambda: cursor_hotspot() != (0, 0))
+            cli("fullscreen", "off")
             cli("gallery", "on")
             initial = status()["thumbnail_height"]
             xdo("mousemove", "--window", win, 440, 700 - 40 - initial - 42 + 5,
@@ -281,8 +286,9 @@ def main():
                 reply = client.recv(16384)
                 assert reply[:1] == b"0" and json.loads(reply[1:])["kind"] == "pdf"
             cli("quit")
-            assert viewer.wait(timeout=8) == 0
-            assert viewer.stderr.read() == b""
+            exit_code = viewer.wait(timeout=8)
+            stderr = viewer.stderr.read().decode(errors="replace")
+            assert exit_code == 0 and not stderr, (exit_code, stderr)
             assert not Path(path).exists()
             cli("open", one)
             assert status()["path"] == str(one)

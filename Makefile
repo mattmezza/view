@@ -13,7 +13,7 @@ PDFIUM ?= $(BUILD)/pdfium
 PKG_CONFIG ?= pkg-config
 OBJCOPY ?= objcopy
 
-PACKAGES := x11 libwebpdemux libwebp libexif zlib
+PACKAGES := x11 x11-xcb xcb libwebpdemux libwebp libexif zlib
 ifeq ($(STATIC),1)
 CODEC_DEPS := $(BUILD)/static-deps/.ready
 CODEC_CFLAGS := -I$(abspath $(BUILD)/static-deps/include)

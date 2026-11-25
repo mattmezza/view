@@ -1,8 +1,9 @@
 #include "app.h"
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
-#include <X11/cursorfont.h>
 #include <X11/XKBlib.h>
+#include <X11/Xlib-xcb.h>
+#include <xcb/xcb.h>
 #include <ctype.h>
 #include <fcntl.h>
 #include <locale.h>
@@ -145,21 +146,38 @@ void x11_close(App *a) {
     XCloseDisplay(a->display);
 }
 
-static Cursor bitmap_cursor(App *a, const char *const rows[16], int hot_x, int hot_y) {
-    char bits[32] = {0}, mask[32] = {0};
+static Cursor bitmap_cursor(App *a, const char *const rows[16], int hot_x, int hot_y, bool transpose) {
+    xcb_point_t light[256], outline[256];
+    unsigned light_count = 0, outline_count = 0;
     for (int y = 0; rows && y < 16 && rows[y]; ++y) {
         for (int x = 0; rows[y][x]; ++x) {
-            int offset = y * 2 + x / 8;
-            if (rows[y][x] != ' ') mask[offset] |= 1 << (x % 8);
-            if (rows[y][x] == '.') bits[offset] |= 1 << (x % 8);
+            xcb_point_t point = transpose ? (xcb_point_t){y, x} : (xcb_point_t){x, y};
+            if (rows[y][x] != ' ') outline[outline_count++] = point;
+            if (rows[y][x] == '.') light[light_count++] = point;
         }
     }
-    Pixmap source = XCreateBitmapFromData(a->display, a->window, bits, 16, 16);
-    Pixmap outline = XCreateBitmapFromData(a->display, a->window, mask, 16, 16);
-    XColor white = {.red = 65535, .green = 65535, .blue = 65535}, black = {0};
-    Cursor cursor = XCreatePixmapCursor(a->display, source, outline, &white, &black, hot_x, hot_y);
-    XFreePixmap(a->display, source);
-    XFreePixmap(a->display, outline);
+    /* Xlib's cursor helpers dlopen libXcursor, which can load a second libc into a static build. */
+    XFlush(a->display);
+    xcb_connection_t *conn = XGetXCBConnection(a->display);
+    xcb_pixmap_t source = xcb_generate_id(conn), mask = xcb_generate_id(conn);
+    xcb_gcontext_t gc = xcb_generate_id(conn);
+    xcb_cursor_t cursor = xcb_generate_id(conn);
+    uint32_t foreground = 0;
+    xcb_rectangle_t clear = {0, 0, 16, 16};
+    xcb_create_pixmap(conn, 1, source, a->window, 16, 16);
+    xcb_create_pixmap(conn, 1, mask, a->window, 16, 16);
+    xcb_create_gc(conn, gc, source, XCB_GC_FOREGROUND, &foreground);
+    xcb_poly_fill_rectangle(conn, source, gc, 1, &clear);
+    xcb_poly_fill_rectangle(conn, mask, gc, 1, &clear);
+    foreground = 1;
+    xcb_change_gc(conn, gc, XCB_GC_FOREGROUND, &foreground);
+    if (light_count) xcb_poly_point(conn, XCB_COORD_MODE_ORIGIN, source, gc, light_count, light);
+    if (outline_count) xcb_poly_point(conn, XCB_COORD_MODE_ORIGIN, mask, gc, outline_count, outline);
+    xcb_create_cursor(conn, cursor, source, mask, 65535, 65535, 65535, 0, 0, 0, hot_x, hot_y);
+    xcb_free_gc(conn, gc);
+    xcb_free_pixmap(conn, source);
+    xcb_free_pixmap(conn, mask);
+    xcb_flush(conn);
     return cursor;
 }
 
@@ -173,6 +191,11 @@ void x11_cursor(App *a) {
         "     ###", "   ###.###", "   #.#.#.###", "   #.#.#.#.#", "   #.......#",
         " ###.......#", " #.........#", "  #........#", "   #.......#",
         "   #......#", "    #.....#", "    #.....#", "    #######"
+    };
+    static const char *const resize[16] = {
+        "       ##", "      #..#", "     #....#", "    #......#", "    ###..###", "      #..#",
+        "      #..#", "      #..#", "      #..#", "      #..#", "      #..#",
+        "    ###..###", "    #......#", "     #....#", "      #..#", "       ##"
     };
     Pointer next = POINTER_ARROW;
     if (!a->show_cursor) next = POINTER_HIDDEN;
@@ -190,12 +213,11 @@ void x11_cursor(App *a) {
     if (next == POINTER_ARROW) XUndefineCursor(a->display, a->window);
     else {
         if (!a->cursors[next]) {
-            if (next == POINTER_ZOOM || next == POINTER_HAND || next == POINTER_HIDDEN)
-                a->cursors[next] = bitmap_cursor(a, next == POINTER_ZOOM ? zoom : next == POINTER_HAND ? hand : NULL,
-                                                next == POINTER_ZOOM ? 5 : next == POINTER_HAND ? 7 : 0,
-                                                next == POINTER_ZOOM ? 5 : next == POINTER_HAND ? 6 : 0);
-            else a->cursors[next] = XCreateFontCursor(a->display,
-                    next == POINTER_ROW ? XC_sb_v_double_arrow : XC_sb_h_double_arrow);
+            const char *const *pattern = next == POINTER_ZOOM ? zoom : next == POINTER_HAND ? hand :
+                                         next == POINTER_HIDDEN ? NULL : resize;
+            int x = next == POINTER_ZOOM ? 5 : next == POINTER_HIDDEN ? 0 : 7;
+            int y = next == POINTER_ZOOM ? 5 : next == POINTER_HAND ? 6 : x;
+            a->cursors[next] = bitmap_cursor(a, pattern, x, y, next == POINTER_COLUMN);
         }
         XDefineCursor(a->display, a->window, a->cursors[next]);
     }

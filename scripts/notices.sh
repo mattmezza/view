@@ -12,7 +12,7 @@ for file in vendor/cui/LICENSE vendor/stb/LICENSE assets/fonts/OFL.txt assets/ic
         *) cat "$file" ;;
     esac
 done
-for package in libc6-dev libgcc-13-dev libx11-dev libxcb1-dev libxau-dev libxdmcp-dev \
+for package in libc6-dev libgcc-13-dev libx11-dev libx11-xcb-dev libxcb1-dev libxau-dev libxdmcp-dev \
     libwebp-dev libjpeg-turbo8-dev libexif-dev zlib1g-dev libaom-dev; do
     file="/usr/share/doc/$package/copyright"
     if [ -f "$file" ]; then

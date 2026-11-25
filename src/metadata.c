@@ -281,8 +281,7 @@ void metadata_load(Metadata *m, const Document *d) {
             fflush(stdout);
         }
         execlp("exiftool", "exiftool", "-config", "", "-a", "-u", "-G1", "-t",
-               "--System:all", "--ExifTool:all", "--File:all", "--IFD0:all", "--IFD1:all",
-               "--ExifIFD:all", "--GPS:all", "--", d->path, (char *)NULL);
+               "--System:all", "--ExifTool:all", "--File:all", "--", d->path, (char *)NULL);
         _exit(127);
     }
 }
@@ -302,6 +301,13 @@ void metadata_extra(Metadata *m) {
              !strcmp(first, "Author") || !strcmp(first, "Subject") || !strcmp(first, "Keywords") ||
              !strcmp(first, "Producer") || !strcmp(first, "Creator") || !strcmp(first, "Create Date") ||
              !strcmp(first, "Modify Date"))) continue;
+        bool duplicate = false;
+        for (int i = 0; i < m->count; ++i)
+            if (!strcasecmp(m->rows[i].label, first) && !strcmp(m->rows[i].value, next)) {
+                duplicate = true;
+                break;
+            }
+        if (duplicate) continue;
         char label[148];
         snprintf(label, sizeof label, "%.94s · %.48s", first, line);
         add(m, label, next);

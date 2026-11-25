@@ -18,7 +18,7 @@ Pass `--default` to register View as the default handler for PDFs and supported 
 curl -fsSL https://raw.githubusercontent.com/mattmezza/view/main/install.sh | sh -s -- --default
 ```
 
-Run the installer again to upgrade. It verifies the release checksum and installs into `~/.local/bin` and `${XDG_DATA_HOME:-~/.local/share}`. Set `VIEW_BIN_DIR` to change the binary location or `VIEW_VERSION=v0.2.0` to pin a release. Restart View after upgrading a running instance. Release binaries for x86-64 and ARM64 are statically linked. View’s update badge uses `curl` to check GitHub in the background.
+Run the installer again to upgrade. It verifies the release checksum and installs into `~/.local/bin` and `${XDG_DATA_HOME:-~/.local/share}`. Set `VIEW_BIN_DIR` to change the binary location or `VIEW_VERSION=v0.2.1` to pin a release. Restart View after upgrading a running instance. Release binaries for x86-64 and ARM64 are statically linked. View’s update badge uses `curl` to check GitHub in the background.
 
 ## Use
 
@@ -43,13 +43,13 @@ Hold **Ctrl** over the canvas for the zoom cursor and use the wheel to zoom. Dra
 
 Drag the top edge of the gallery or the right edge of the page thumbnail panel to resize the thumbnails. **F5** shows one page or image at a time. Left-click, Space, or Right advances. Right-click or Left goes back. **Esc** returns to the viewer.
 
-The file info panel shows dimensions, size, modification time, EXIF fields such as lens, shutter speed and GPS, and PDF properties. Scroll to see more and click a row to copy its value. With [ExifTool](https://exiftool.org/) installed, the panel also reads additional metadata such as XMP and IPTC.
+The file info panel shows dimensions, size, modification time, EXIF fields such as lens, shutter speed and GPS, and PDF properties. Scroll to see more and click a row to copy its value. Install ExifTool to read additional metadata such as XMP and IPTC. [ExifTool](https://exiftool.org/)
 
 View reads PDF, JPEG, PNG, GIF, WebP, AVIF, TIFF, SVG, BMP, TGA, ICO, QOI, PBM, PGM, PPM, PSD composites, and Radiance HDR. Animated images and multipage TIFFs display their first frame or page. SVG uses NanoSVG’s path and shape rendering. HEIC and camera RAW are outside the supported format list.
 
 ## Print
 
-Use the printer icon or **Ctrl+P**. Choose the current image or page, the whole gallery or PDF, or a range. Pick the paper, orientation, layout, order, and scale to put up to nine items on a sheet. The preview shows the first sheet. You can also choose black and white, duplex, and the number of copies. Printing uses your [CUPS](https://openprinting.github.io/cups/doc/options.html) queues and the `lp` command.
+Use the printer icon or **Ctrl+P**. Choose the current image or page, the whole gallery or PDF, or a range. Pick the paper, orientation, layout, order, and scale to put up to nine items on a sheet. The preview shows the first sheet. You can also choose black and white, duplex, and the number of copies. Printing uses CUPS queues and the `lp` command. [CUPS printing options](https://openprinting.github.io/cups/doc/options.html)
 
 ![View’s print dialog showing four photos on a landscape sheet](assets/screenshots/print.png)
 
@@ -77,7 +77,7 @@ Copy the sample to `${XDG_CONFIG_HOME:-~/.config}/view/config` and reload with C
 
 ## Build and install from source
 
-Install a C compiler, Make, Python 3, pkg-config, curl, LLVM’s linker (LLD 22 or later), and the development packages for X11, libwebp, libtiff, libavif, libexif, libjpeg, and zlib. The build fetches a checksum-pinned PDFium archive.
+Install a C compiler, Make, Python 3, pkg-config, curl, LLVM’s linker (LLD 22 or later), and the development packages for X11 with the Xlib–XCB bridge, XCB, libwebp, libtiff, libavif, libexif, libjpeg, and zlib. The build fetches a checksum-pinned PDFium archive.
 
 ```sh
 make -j
@@ -89,7 +89,7 @@ The source installation uses `/usr/local` by default and installs the executable
 The [release workflow](.github/workflows/release.yml) lists the Ubuntu static build dependencies and runs the X11 smoke test under Xvfb. A release from the current commit on `origin/main` starts that workflow.
 
 ```sh
-make release name=v0.2.0
+make release name=v0.2.1
 ```
 
 Each [release](https://github.com/mattmezza/view/releases) gets its binaries, SHA-256 checksums, and third-party notices. The Makefile and release workflow provide the build and relinking instructions. System libraries are sourced from Ubuntu’s [package archive](https://archive.ubuntu.com/ubuntu/pool/).
